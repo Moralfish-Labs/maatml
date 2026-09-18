@@ -89,6 +89,16 @@ labelled, and whether the action applied. The outcome is the environment's
 verdict. An episode the teacher could not label to the end is cut at that
 state and says so in `outcome.truncated`.
 
+## Training on what was collected
+
+Turning episodes into rows is the format plugin's job, because only it knows
+how an observation becomes model input. Hand the rows to `prepare_rows` as
+`train_rows`: they join train after the split and never reach val or the
+benchmark, so every round is measured on the same held-out rows as the first.
+Collect them only from tasks your held-out sets exclude; an environment can
+say so on the task (for example a `split` field), and the format plugin should
+refuse episodes that do not carry it.
+
 ## `line_world`
 
 The built-in example environment: walk an integer line to a target, then

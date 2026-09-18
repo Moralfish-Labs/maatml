@@ -278,3 +278,38 @@ dataset:
     dupe = {"sample_id": "b-1", "family": "bench:fam0", "source": "bench", "payload": 0}
     with pytest.raises(ValueError, match="duplicate seed rows by content"):
         prepare_rows(md, seed_rows, out_dir=tmp_path / "out", benchmark_rows=[dupe])
+
+
+def test_train_only_rows_join_train_and_never_a_held_out_group(tmp_path: Path) -> None:
+    """Rows a policy collected from its own rollouts train the next round but
+    must not move val or test, and must not smuggle in a held-out group."""
+    mdir = tmp_path / "model"
+    mdir.mkdir(parents=True)
+    (mdir / "model.yml").write_text(
+        "name: rounds\nmodel_id: rounds\narchitecture: causal_sft\nversion: 0.1.0\n"
+        "dataset:\n  seed_samples: seeds.jsonl\n",
+        encoding="utf-8",
+    )
+    md = load_model_def(mdir)
+    seed_rows = [
+        {"sample_id": f"{fam}-{i}", "family": fam, "request": f"request {fam} {i}"}
+        for fam in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
+        for i in range(4)
+    ]
+    rollout = [{"sample_id": "r-1", "family": "rollout_fam", "request": "visited state"}]
+    summary = prepare_rows(md, seed_rows, out_dir=tmp_path / "out", train_rows=rollout)
+
+    def ids(split: str) -> set[str]:
+        return {row["sample_id"] for row in iter_jsonl(tmp_path / "out" / f"{split}.jsonl")}
+
+    assert "r-1" in ids("train") and "r-1" not in ids("val") | ids("test")
+    assert summary["split_counts"]["train"] == len(ids("train"))
+
+    held_out = next(iter(ids("val") | ids("test"))).rsplit("-", 1)[0]
+    with pytest.raises(ValueError, match="held-out group"):
+        prepare_rows(
+            md,
+            seed_rows,
+            out_dir=tmp_path / "out2",
+            train_rows=[{"sample_id": "r-2", "family": held_out, "request": "leak"}],
+        )

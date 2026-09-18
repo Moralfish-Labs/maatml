@@ -19,6 +19,11 @@ for the Python package and per-model versions under `examples/`.
   Environments plug in as the new `environment` plugin kind or as any program
   speaking JSON lines over stdio (`--env-command`). `line_world` ships as the
   example environment. See `docs/rollouts.md`.
+- **Train-only rows in `prepare_rows`.** `train_rows` join train after the
+  hash split and never reach val or the benchmark, so rows a policy collected
+  from its own rollouts train the next round without moving the numbers
+  earlier runs were measured on. A train-only row whose group is already in
+  val or test is refused.
 
 ## [0.13.0] - 2026-08-28
 

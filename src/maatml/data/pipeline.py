@@ -336,8 +336,14 @@ def prepare_rows(
     sanitize_applied: Optional[list[str]] = None,
     blind_rows: Optional[list[dict]] = None,
     input_files: Optional[Sequence[Path]] = None,
+    train_rows: Optional[list[dict]] = None,
 ) -> dict:
     """Split already-loaded rows and write train/val/test + dataset card.
+
+    ``train_rows`` join train after the hash split and never reach val or the
+    benchmark: rows collected from a policy's own rollouts, whose distribution
+    must not move the numbers earlier runs were measured on. A train-only row
+    whose group the split sent to val or test is refused.
 
     ``dataset.pins`` move whole groups into val or the benchmark after the
     hash split; ``dataset.isolation`` is then asserted over every population,
@@ -416,6 +422,28 @@ def prepare_rows(
             tagged = dict(row)
             tagged["split"] = Split.test.value
             by_split[Split.test].append(tagged)
+            category_counts[str(tagged.get("category") or "unknown")] += 1
+            source_counts[str(tagged.get("source") or "unknown")] += 1
+            if tagged.get("family"):
+                family_counts[str(tagged["family"])] += 1
+
+    if train_rows:
+        leaked = sorted(
+            {
+                key
+                for key in (_group_key(row, group_by=group_by) for row in train_rows)
+                if group_assignment.get(key) in (Split.val, Split.test)
+            }
+        )
+        if leaked:
+            raise ValueError(
+                f"{len(leaked)} train-only group(s) are already in val or test, "
+                f"e.g. {leaked[:3]}; refusing to train on a held-out group"
+            )
+        for row in train_rows:
+            tagged = dict(row)
+            tagged["split"] = Split.train.value
+            by_split[Split.train].append(tagged)
             category_counts[str(tagged.get("category") or "unknown")] += 1
             source_counts[str(tagged.get("source") or "unknown")] += 1
             if tagged.get("family"):
@@ -508,6 +536,7 @@ def prepare_rows(
             f"Pins: {pinned if pinned else 'none'}",
             f"Isolation: {isolation.policy if isolation else 'none'}",
             f"Blind rows (checked, not written): {len(blind_rows or [])}",
+            f"Train-only rows: {len(train_rows or [])}",
             f"Attribution: {attribution_path or 'none'}"
             + (f" (keyed on `{attribution_field}`)" if attribution_path else ""),
             f"Accepted risk: {accepted_risk if accepted_risk else 'none'}",
