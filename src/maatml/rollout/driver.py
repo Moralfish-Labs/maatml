@@ -188,6 +188,18 @@ def rollout(
         )
 
 
+def wilson95(successes: int, total: int) -> list[float]:
+    """Wilson 95% score interval for a success rate; ``[0, 1]`` with no trials."""
+    if total <= 0:
+        return [0.0, 1.0]
+    z = 1.959963984540054
+    rate = successes / total
+    denom = 1.0 + z * z / total
+    centre = (rate + z * z / (2.0 * total)) / denom
+    half = z / denom * math.sqrt(rate * (1.0 - rate) / total + z * z / (4.0 * total * total))
+    return [max(0.0, centre - half), min(1.0, centre + half)]
+
+
 def summarize(episodes: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Verified success, overall and per task family, plus label coverage."""
     families: dict[str, dict[str, int]] = {}
@@ -211,12 +223,17 @@ def summarize(episodes: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "episodes": episodes_total,
         "success": success_total,
         "success_rate": success_total / episodes_total if episodes_total else 0.0,
+        "wilson95": wilson95(success_total, episodes_total),
         "truncated": truncated,
         "decisions": decisions,
         "labelled_decisions": labelled,
         "policy_agrees_with_teacher": agreed / labelled if labelled else None,
         "families": {
-            name: {**bucket, "success_rate": bucket["success"] / bucket["episodes"]}
+            name: {
+                **bucket,
+                "success_rate": bucket["success"] / bucket["episodes"],
+                "wilson95": wilson95(bucket["success"], bucket["episodes"]),
+            }
             for name, bucket in sorted(families.items())
         },
     }

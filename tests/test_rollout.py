@@ -73,6 +73,15 @@ def test_labels_record_the_teacher_on_states_the_policy_reached() -> None:
     summary = summarize([episode])
     assert summary["policy_agrees_with_teacher"] == 0.0
     assert summary["families"]["near"]["success_rate"] == 0.0
+    assert summary["families"]["near"]["wilson95"][0] == 0.0
+
+
+def test_wilson_interval_matches_known_values() -> None:
+    from maatml.rollout.driver import wilson95
+
+    low, high = wilson95(49, 200)
+    assert low == pytest.approx(0.1905, abs=1e-3) and high == pytest.approx(0.3090, abs=1e-3)
+    assert wilson95(0, 0) == [0.0, 1.0]
 
 
 def test_reset_options_relax_the_budget() -> None:
