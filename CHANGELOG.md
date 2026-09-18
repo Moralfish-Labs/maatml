@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for the Python package and per-model versions under `examples/`.
 
+## [Unreleased]
+
+### Added
+
+- **`maatml rollout` and the rollout environment protocol
+  (`maatml.rollout_env/1`).** A checkpoint acts in an environment that lists
+  the legal candidates, applies the chosen one, and verifies the outcome
+  itself. The driver records every decision with its log-probabilities and,
+  with `--label`, the valid set the environment's teacher accepts at each
+  state the policy reached, which is what DAgger relabeling trains on.
+  Environments plug in as the new `environment` plugin kind or as any program
+  speaking JSON lines over stdio (`--env-command`). `line_world` ships as the
+  example environment. See `docs/rollouts.md`.
+
 ## [0.13.0] - 2026-08-28
 
 ### Fixed

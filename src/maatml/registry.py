@@ -130,6 +130,8 @@ GENERATORS = _Registry("generator")
 # llama.cpp / HTTP, core only dispatches.
 COMPILERS = _Registry("compiler")
 SERVERS = _Registry("server")
+# Rollout environments: a factory returning a `maatml.rollout.Environment`.
+ENVIRONMENTS = _Registry("environment")
 
 _ALL_REGISTRIES: dict[str, _Registry] = {
     "trainer": TRAINERS,
@@ -144,6 +146,7 @@ _ALL_REGISTRIES: dict[str, _Registry] = {
     "generator": GENERATORS,
     "compiler": COMPILERS,
     "server": SERVERS,
+    "environment": ENVIRONMENTS,
 }
 
 _discovered = False
@@ -216,6 +219,7 @@ register_exporter = _make_decorator(EXPORTERS)
 register_generator = _make_decorator(GENERATORS)
 register_compiler = _make_decorator(COMPILERS)
 register_server = _make_decorator(SERVERS)
+register_environment = _make_decorator(ENVIRONMENTS)
 
 
 def get_registry(kind: str) -> _Registry:
@@ -392,6 +396,7 @@ _BUILTIN_PLUGIN_MODULES = (
     "maatml.export.gguf",
     "maatml.export.mlx_export",
     "maatml.servers",
+    "maatml.rollout.example",
 )
 
 

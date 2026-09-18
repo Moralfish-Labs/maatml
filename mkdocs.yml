@@ -41,6 +41,7 @@ nav:
   - The validator-gated lifecycle: lifecycle.md
   - The data flywheel: flywheel.md
   - Evidence: evidence.md
+  - Rollouts: rollouts.md
   - Serving & deployment: serving.md
   - Plugin author guide: plugins.md
   - Examples:
