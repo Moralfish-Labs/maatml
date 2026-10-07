@@ -8,6 +8,13 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `maatml gates derive --write` left `model.yml` unparseable when the
+  section's gates were the inline empty mapping `gates: {}`: the rewriter
+  kept that line and put the block beneath it. The line now becomes a block
+  head.
+
 ### Added
 
 - **`maatml rollout` and the rollout environment protocol

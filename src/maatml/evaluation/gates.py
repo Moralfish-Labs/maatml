@@ -279,6 +279,8 @@ def rewrite_gates_block(text: str, result: DeriveResult, tiers: dict[str, str]) 
         raise DeriveError(f"could not find {result.section}.gates in model.yml")
     block = "".join(line + "\n" for line in render_gate_lines(result, tiers))
     head = match.group(1)
+    # An empty inline mapping (`gates: {}`) cannot take a block beneath it.
+    head = re.sub(r"^  gates:.*\n\Z", "  gates:\n", head, flags=re.MULTILINE)
     stamp = f"  gates_benchmark: {result.benchmark_sha256}\n"
     if re.search(r"^  gates_benchmark:.*\n", head, re.MULTILINE):
         head = re.sub(r"^  gates_benchmark:.*\n", stamp, head, count=1, flags=re.MULTILINE)
