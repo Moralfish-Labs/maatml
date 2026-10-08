@@ -10,12 +10,30 @@ for the Python package and per-model versions under `examples/`.
 
 ### Fixed
 
+- Causal SFT masked non-final assistant turns of a multi-turn row against
+  shifted offsets: Qwen3 renders an empty think block only on the final
+  assistant turn, so each earlier target started late and ran into the next
+  user turn. Assistant spans are now located on one full render and decoded
+  back before they are trained; single-turn rows mask byte-identically.
+
 - `maatml gates derive --write` left `model.yml` unparseable when the
   section's gates were the inline empty mapping `gates: {}`: the rewriter
   kept that line and put the block beneath it. The line now becomes a block
   head.
 
 ### Added
+
+- **Tool-call chat rows in causal SFT.** Rows may carry `tools` (passed to
+  the chat template as `tools=`), `chat_template_kwargs` (per-row template
+  variables such as `enable_thinking`), assistant `tool_calls`, and `tool`
+  turns. Every assistant turn, tool-call turns included, is a supervised
+  target; system, user, tool results and the tools preamble are masked. A
+  tool row whose spans cannot be located exactly raises instead of training.
+  `prepare` checks the structure of these fields, the `causal_sft` predictor
+  renders tool rows with their tools (`prompt_ids`) and parses
+  `<tool_call>` blocks back (`predict_structured`,
+  `maatml.utils.chat.parse_tool_calls`). `scripts/check_chat_masks.py`
+  dry-runs rendering and masking over a rows file with a cached tokenizer.
 
 - **`maatml rollout` and the rollout environment protocol
   (`maatml.rollout_env/1`).** A checkpoint acts in an environment that lists

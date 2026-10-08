@@ -354,11 +354,12 @@ class CausalSFTPredictor:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        from ..training.sft_base import render_inference_prompt
+        from ..training.sft_base import render_chat_prompt, render_inference_prompt
         from ..utils.io import read_json
 
         self._torch = torch
         self._render = render_inference_prompt
+        self._render_chat = render_chat_prompt
         self._max_input_tokens = max_input_tokens
         self._device = device if hasattr(device, "type") else resolve_device(str(device))
 
@@ -414,16 +415,43 @@ class CausalSFTPredictor:
         model.eval()
         self._model = model
 
-    def predict(self, row: dict) -> str:
-        assert self._model is not None and self._tokenizer is not None
-        torch = self._torch
-        request = row[self._request_field]
-        input_ids = self._render(
-            request,
+    def _uses_messages(self, row: dict) -> bool:
+        """A ``messages`` row is rendered from its own turns when it carries
+        tools or has no request field; request rows keep the prompt_spec path."""
+        messages = row.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return False
+        return bool(row.get("tools")) or self._request_field not in row
+
+    def prompt_ids(self, row: dict) -> list[int]:
+        """Prompt token ids for ``row``, rendered the way training rendered it:
+        a tool row gets its ``tools`` and ``chat_template_kwargs``."""
+        if self._uses_messages(row):
+            return self._render_chat(row, self._tokenizer)
+        return self._render(
+            row[self._request_field],
             self._prompt_spec,
             self._tokenizer,
             user_placeholder=self._user_placeholder,
         )
+
+    def predict_structured(self, row: dict) -> dict[str, Any]:
+        """``predict`` plus the output parsed into prose and ``tool_calls``."""
+        from ..utils.chat import parse_tool_calls
+
+        raw = self.predict(row)
+        parsed = parse_tool_calls(raw)
+        return {
+            "raw": raw,
+            "content": parsed.content,
+            "tool_calls": parsed.tool_calls,
+            "errors": parsed.errors,
+        }
+
+    def predict(self, row: dict) -> str:
+        assert self._model is not None and self._tokenizer is not None
+        torch = self._torch
+        input_ids = self.prompt_ids(row)
         if self._max_input_tokens and len(input_ids) > self._max_input_tokens:
             self._truncated += 1
             input_ids = input_ids[-self._max_input_tokens :]

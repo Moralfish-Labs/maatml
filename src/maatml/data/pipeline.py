@@ -19,6 +19,7 @@ from rich.console import Console
 
 from ..config import ModelDefinition, get_dataset_cfg
 from ..registry import SANITIZERS, register_format
+from ..utils.chat import validate_chat_row
 from ..utils.io import iter_jsonl, stable_hash, write_jsonl
 from .attribution import (
     AttributionError,
@@ -325,6 +326,25 @@ def _check_benchmark_leakage(
         )
 
 
+def _check_chat_rows(populations: dict[str, Optional[list[dict]]]) -> None:
+    """Refuse rows whose tool-call fields are malformed.
+
+    ``tools``, assistant ``tool_calls``, ``tool`` turns, ``chat_template_kwargs``
+    and the ``family`` / ``surface`` / ``category`` / ``scenario`` tags are
+    accepted; only their structure is checked, so plain rows are untouched.
+    """
+    problems: list[str] = []
+    for label, rows in populations.items():
+        for n, row in enumerate(rows or []):
+            for problem in validate_chat_row(row):
+                problems.append(f"{label} row {row.get('sample_id') or n}: {problem}")
+    if problems:
+        more = f"\n  ... and {len(problems) - 10} more" if len(problems) > 10 else ""
+        raise ValueError(
+            "malformed chat rows; refusing to write splits:\n  " + "\n  ".join(problems[:10]) + more
+        )
+
+
 def prepare_rows(
     model_def: ModelDefinition,
     seed_rows: list[dict],
@@ -360,6 +380,9 @@ def prepare_rows(
     benchmark and blind files as they were read) by sha256.
     """
     cfg = get_dataset_cfg(model_def)
+    _check_chat_rows(
+        {"seed": seed_rows, "benchmark": benchmark_rows, "blind": blind_rows, "train": train_rows}
+    )
     out = Path(out_dir) if out_dir else model_def.prepared_dir
     out.mkdir(parents=True, exist_ok=True)
     ratios = _resolve_ratios(cfg)

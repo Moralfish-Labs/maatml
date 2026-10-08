@@ -3,9 +3,12 @@
 The causal-SFT trainers follow this pattern:
 
   - Qwen3-1.7B (or 0.6B for smoke) base + LoRA on attention projections
-  - 3-message conversations: system + user + assistant
+  - 3-message conversations: system + user + assistant, or a row's own
+    ``messages`` (with optional ``tools``, assistant ``tool_calls``, ``tool``
+    turns and per-row ``chat_template_kwargs``)
   - Assistant content is a serialised JSON object (per-task schema)
-  - Loss masked over system+user; unmasked over assistant + closing `<|im_end|>`
+  - Loss masked over system+user+tool turns; unmasked over every assistant
+    turn + closing `<|im_end|>`, located on one full render
   - bf16 autocast on MPS/CUDA (weights stay fp32, autocast does the work)
   - Merged safetensors + tokenizer + prompt_spec saved to `output/checkpoints/`
 
@@ -53,6 +56,15 @@ from ..device import (
     resolve_training_placement,
 )
 from ..runs import begin_training_run, finish_run, normalize_report_to
+from ..utils.chat import (
+    ChatSpanError,
+    assistant_char_spans,
+    chat_template_options,
+    expected_fragments,
+    has_tool_features,
+    normalize_messages,
+    render_chat,
+)
 from ..utils.io import iter_jsonl, read_json, sha256_file, stable_hash
 from .guards import (
     ensure_tokenizer_model_contract,
@@ -109,6 +121,8 @@ def _render_then_tokenize(
     tokenizer: PreTrainedTokenizerBase,
     *,
     add_generation_prompt: bool,
+    tools: Optional[list[dict]] = None,
+    template_kwargs: Optional[dict[str, Any]] = None,
 ) -> list[int]:
     """Render the chat template to text, then tokenize. Robust against
     `tokenize=True` returning unexpected shapes in different transformers
@@ -119,23 +133,23 @@ def _render_then_tokenize(
     instead of asking the model to emit one. With thinking pre-completed
     the model produces JSON directly. Tokenizers whose templates ignore
     the kwarg silently drop it (no behaviour change for non-Qwen3 bases).
+    A row's ``chat_template_kwargs`` override it; ``tools`` are passed through.
     """
     if not rendered:
         return []
-    try:
-        text = tokenizer.apply_chat_template(
-            rendered,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
-            enable_thinking=False,
-        )
-    except TypeError:
-        # Older transformers / non-Qwen3 templates that don't accept the kwarg.
-        text = tokenizer.apply_chat_template(
-            rendered, tokenize=False, add_generation_prompt=add_generation_prompt
-        )
+    text = render_chat(
+        rendered,
+        tokenizer,
+        add_generation_prompt=add_generation_prompt,
+        tools=tools,
+        template_kwargs=template_kwargs,
+    )
     if not text:
         return []
+    return _tokenize_text(text, tokenizer)
+
+
+def _tokenize_text(text: str, tokenizer: PreTrainedTokenizerBase) -> list[int]:
     encoded = tokenizer(text, add_special_tokens=False, return_tensors=None)
     return _flatten_token_list(encoded)
 
@@ -147,27 +161,16 @@ def _messages_from_sample(
     target_field: str,
     request_field: str,
     user_placeholder: str,
-) -> list[dict[str, str]]:
-    """Build chat messages from either multi-turn ``messages`` or prompt_spec."""
-    raw = sample.get("messages")
-    if isinstance(raw, list) and raw:
-        out: list[dict[str, str]] = []
-        for msg in raw:
-            if not isinstance(msg, dict):
-                continue
-            role = str(msg.get("role") or msg.get("from") or "")
-            content = msg.get("content", msg.get("value", ""))
-            if role in ("human", "user"):
-                role = "user"
-            elif role in ("gpt", "assistant"):
-                role = "assistant"
-            elif role == "system":
-                role = "system"
-            else:
-                continue
-            out.append({"role": role, "content": str(content)})
-        if out:
-            return out
+) -> list[dict[str, Any]]:
+    """Build chat messages from either multi-turn ``messages`` or prompt_spec.
+
+    ``messages`` keep assistant ``tool_calls`` and ``tool`` turns (see
+    :func:`maatml.utils.chat.normalize_messages`); the row's ``tools`` are
+    passed to the template separately.
+    """
+    out = normalize_messages(sample.get("messages"))
+    if out:
+        return out
 
     user_text = prompt_spec["user_template"].replace(user_placeholder, sample[request_field])
     target_text = render_assistant_target(sample, target_field)
@@ -176,6 +179,67 @@ def _messages_from_sample(
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": target_text},
     ]
+
+
+def _token_boundary(
+    text: str,
+    char_index: int,
+    full_ids: list[int],
+    tokenizer: PreTrainedTokenizerBase,
+) -> int:
+    """Token index where ``text[:char_index]`` ends inside ``full_ids``.
+
+    Tokenizing the prefix alone is what the trainer always measured, so plain
+    rows keep their exact boundaries; the prefix ids must also be the head of
+    the full encoding, or the boundary would split a token.
+    """
+    if char_index >= len(text):
+        return len(full_ids)
+    head = _tokenize_text(text[:char_index], tokenizer)
+    if full_ids[: len(head)] != head:
+        raise ChatSpanError(f"character {char_index} does not fall on a token boundary")
+    return len(head)
+
+
+def _legacy_assistant_labels(
+    rendered: list[dict],
+    tokenizer: PreTrainedTokenizerBase,
+    full_ids: list[int],
+    labels: list[int],
+    *,
+    tools: Optional[list[dict]],
+    template_kwargs: dict[str, Any],
+) -> None:
+    """Prefix-length masking used before span location. Kept only as the
+    fallback for plain rows whose template renders turns non-incrementally."""
+    opts = {"tools": tools, "template_kwargs": template_kwargs}
+    for i, msg in enumerate(rendered):
+        if msg.get("role") != "assistant":
+            continue
+        prefix_ids = _render_then_tokenize(
+            rendered[:i], tokenizer, add_generation_prompt=True, **opts
+        )
+        through_ids = _render_then_tokenize(
+            rendered[: i + 1], tokenizer, add_generation_prompt=False, **opts
+        )
+        for j in range(len(prefix_ids), min(len(through_ids), len(full_ids))):
+            labels[j] = full_ids[j]
+
+
+def _verify_span(
+    tokenizer: PreTrainedTokenizerBase,
+    ids: list[int],
+    span_text: str,
+    message: dict[str, Any],
+) -> None:
+    decode = getattr(tokenizer, "decode", None)
+    if callable(decode):
+        decoded = decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+        if decoded != span_text:
+            raise ChatSpanError("the supervised tokens do not decode to the turn's text")
+    for fragment in expected_fragments(message):
+        if fragment not in span_text:
+            raise ChatSpanError(f"the supervised span is missing {fragment[:60]!r}")
 
 
 def build_chat_example(
@@ -187,13 +251,20 @@ def build_chat_example(
     target_field: str,
     request_field: str = "request",
     user_placeholder: str = "<<USER_REQUEST>>",
+    return_spans: bool = False,
 ) -> dict[str, Any]:
     """Tokenize a sample into input_ids + labels.
 
-    Loss is masked over system/user turns and unmasked over each assistant
-    turn (content + closing special tokens). Multi-turn ``messages`` rows
-    (alpaca / sharegpt) unmask every assistant span; the classic single-turn
-    prompt_spec path is unchanged.
+    Loss is masked over system/user/tool turns and the tools preamble, and
+    unmasked over each assistant turn (content, ``<tool_call>`` blocks and the
+    closing special tokens). The conversation is rendered once with the row's
+    ``tools`` and ``chat_template_kwargs``; each assistant span is located in
+    that render by :func:`maatml.utils.chat.assistant_char_spans` and checked
+    by decoding it back. A tool row whose spans cannot be located exactly
+    raises :class:`ChatSpanError` rather than training on shifted labels.
+
+    ``return_spans`` adds ``spans``: ``(message_index, token_start, token_end)``
+    per assistant turn, before truncation (the dry-run checker reads them).
     """
     rendered = _messages_from_sample(
         sample,
@@ -202,26 +273,76 @@ def build_chat_example(
         request_field=request_field,
         user_placeholder=user_placeholder,
     )
-
-    full_ids = _render_then_tokenize(rendered, tokenizer, add_generation_prompt=False)
+    tools, template_kwargs = chat_template_options(sample)
+    opts = {"tools": tools, "template_kwargs": template_kwargs}
+    text = render_chat(rendered, tokenizer, add_generation_prompt=False, **opts) if rendered else ""
+    full_ids = _tokenize_text(text, tokenizer) if text else []
     labels: list[int] = [-100] * len(full_ids)
+    spans: list[tuple[int, int, int]] = []
 
-    for i, msg in enumerate(rendered):
-        if msg.get("role") != "assistant":
-            continue
-        prefix_ids = _render_then_tokenize(rendered[:i], tokenizer, add_generation_prompt=True)
-        through_ids = _render_then_tokenize(
-            rendered[: i + 1], tokenizer, add_generation_prompt=False
+    tool_row = has_tool_features(rendered, tools)
+    if tools and text:
+        bare = render_chat(
+            rendered, tokenizer, add_generation_prompt=False, template_kwargs=template_kwargs
         )
-        start = len(prefix_ids)
-        end = min(len(through_ids), len(full_ids))
-        for j in range(start, end):
-            labels[j] = full_ids[j]
+        if bare == text:
+            raise ChatSpanError(
+                f"row {sample.get('sample_id')}: the chat template did not render tools "
+                "(does it support tools=?)"
+            )
+    try:
+        char_spans = assistant_char_spans(rendered, tokenizer, full_text=text, **opts)
+        for span in char_spans:
+            start = _token_boundary(text, span.start, full_ids, tokenizer)
+            end = _token_boundary(text, span.end, full_ids, tokenizer)
+            _verify_span(
+                tokenizer,
+                full_ids[start:end],
+                text[span.start : span.end],
+                rendered[span.message_index],
+            )
+            labels[start:end] = full_ids[start:end]
+            spans.append((span.message_index, start, end))
+    except ChatSpanError as exc:
+        if tool_row:
+            raise ChatSpanError(f"row {sample.get('sample_id')}: {exc}") from exc
+        labels = [-100] * len(full_ids)
+        spans = []
+        _legacy_assistant_labels(rendered, tokenizer, full_ids, labels, **opts)
 
     if len(full_ids) > max_length:
         full_ids = full_ids[-max_length:]
         labels = labels[-max_length:]
-    return {"input_ids": full_ids, "labels": labels, "length": len(full_ids)}
+    out: dict[str, Any] = {"input_ids": full_ids, "labels": labels, "length": len(full_ids)}
+    if return_spans:
+        out["spans"] = spans
+    return out
+
+
+def prompt_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The conversation up to (not including) its trailing assistant turns."""
+    out = list(messages)
+    while out and out[-1].get("role") == "assistant":
+        out.pop()
+    return out
+
+
+def render_chat_prompt(
+    sample: dict,
+    tokenizer: PreTrainedTokenizerBase,
+) -> list[int]:
+    """Inference prompt for a ``messages`` row: every turn before the final
+    assistant answer, the row's ``tools`` and ``chat_template_kwargs``, and the
+    generation prompt. The same render training used for that turn."""
+    tools, template_kwargs = chat_template_options(sample)
+    messages = prompt_messages(normalize_messages(sample.get("messages")))
+    return _render_then_tokenize(
+        messages,
+        tokenizer,
+        add_generation_prompt=True,
+        tools=tools,
+        template_kwargs=template_kwargs,
+    )
 
 
 def render_inference_prompt(
@@ -541,7 +662,9 @@ def train_sft(
             # val.jsonl content too: re-preparing with the same train split but
             # a different val split used to reuse a stale val cache.
             sha256_file(val_file) if val_file.is_file() else "",
-            "causal_sft",
+            # Bumped when masking changes, so caches built by the old
+            # prefix-length masking are never reused.
+            "causal_sft:chat_spans_v2",
             target_field,
             request_field,
             user_placeholder,
