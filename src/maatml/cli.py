@@ -1752,6 +1752,7 @@ def cmd_rollout(
     """Act with a checkpoint in an environment and store the episodes it verifies."""
     import json
     import shlex
+    from time import monotonic
 
     from .device import resolve_device
     from .registry import ENVIRONMENTS, PREDICTORS
@@ -1773,6 +1774,8 @@ def cmd_rollout(
             "a rollout policy must rank an environment's candidates"
         )
     checkpoint_dir = resolve_checkpoint(md, checkpoint)
+    started = monotonic()
+    console.print(f"[cyan]rollout[/] loading checkpoint {checkpoint_dir}")
     predictor.setup(checkpoint_dir, model_def=md, device=resolve_device(device))
 
     options: dict[str, object] = {}
@@ -1804,7 +1807,20 @@ def cmd_rollout(
         task_list = environment.tasks(json.loads(tasks))
         if not task_list:
             raise ValueError(f"the environment returned no tasks for {tasks}")
-        summary = write_episodes(rollout(environment, predictor, task_list, config=config), out_dir)
+        console.print(f"[cyan]rollout[/] 0/{len(task_list)} episodes completed")
+
+        def progress_episodes():
+            episodes = rollout(environment, predictor, task_list, config=config)
+            for completed, episode in enumerate(episodes, 1):
+                outcome = episode["outcome"]
+                console.print(
+                    f"[cyan]rollout[/] {completed}/{len(task_list)} episodes completed "
+                    f"task={episode['task_id']} status={outcome['status']} "
+                    f"decisions={outcome['decisions']} elapsed={monotonic() - started:.1f}s"
+                )
+                yield episode
+
+        summary = write_episodes(progress_episodes(), out_dir)
     finally:
         if isinstance(environment, StdioEnvironment):
             environment.shutdown()

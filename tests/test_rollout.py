@@ -201,6 +201,10 @@ def test_cli_rollout_stores_labelled_episodes(tmp_path: Path) -> None:
         ],
     )  # fmt: skip
     assert result.exit_code == 0, result.output
+    assert "loading checkpoint" in result.output
+    for completed in range(4):
+        assert f"{completed}/3 episodes completed" in result.output
+    assert result.output.index("1/3 episodes completed") < result.output.index("rollout complete")
     out_dir = model_dir / "output" / "episodes" / "dagger-r1"
     summary = json.loads((out_dir / "episodes.summary.json").read_text())
     assert summary["episodes"] == 3 and summary["success_rate"] == 1.0
