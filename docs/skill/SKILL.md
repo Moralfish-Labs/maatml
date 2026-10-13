@@ -45,6 +45,7 @@ maatml runs <model-dir> [--compare]  # what has been recorded
 maatml runs <model-dir> --pack RUN   # the run, its evidence and its record, in one tar
 maatml runs <model-dir> --adopt B    # unpack a bundle here; refuses another recipe
 maatml report <model-dir>            # runs, floors with derivation, slices, seeds, spends
+maatml rollout <model-dir> --env line_world --tasks '{"count": 50}' --label  # unreleased
 ```
 
 `run` skips steps whose fingerprint still matches — effective config, declared
@@ -56,6 +57,17 @@ holds it; `plan` prints which component changed.
 The source operations — `datagen`, `distill`, `ingest`, `mint`, reviewed
 `serve --capture` — stay **outside** the runner. They change the seed corpus,
 which is exactly what makes `prepare` stale next run.
+
+Rollout collection also stays explicit. Its environment verifies outcomes;
+the format plugin can pass collected rows as `train_rows` to `prepare_rows`
+without moving held-out populations. Rollouts, train-only rows and tool-call
+chat training are implemented after 0.13.0 and remain Unreleased.
+
+External orchestration owns worker provisioning, storage transfers, monitoring
+and cleanup. For recovery, preserve mid-run checkpoints and use a verified
+explicit `--resume` path with the original recipe and inputs. `runs --pack`
+omits nested `checkpoint-*` directories; it carries completed-run evidence,
+not an interrupted-training backup.
 
 Depth, in this skill's own folder: `references/model-yml.md` for the config
 surface, `references/plugins.md` for registering a validator, predictor,
@@ -233,7 +245,10 @@ from documentation is a different version's contract, and it drifts silently.
 ## Before any change to maatml itself lands
 
 ```bash
-python -m pytest
+ruff check src tests scripts examples
+ruff format --check src tests scripts examples
+mypy src/maatml --ignore-missing-imports
+python -m pytest tests/ examples/ -q
 ```
 
 Read the run record before asking why a number moved: `maatml runs <dir>

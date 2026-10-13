@@ -1,5 +1,9 @@
 # Rollouts
 
+This guide describes implemented source features after **0.13.0**, currently
+listed under Unreleased. Check `maatml rollout --help` in the environment that
+will run the job.
+
 A rollout is a trained policy acting in an environment, one decision at a
 time, until the environment says the episode is over. `maatml rollout` drives
 it and stores what happened. The same driver serves three uses:
@@ -20,6 +24,10 @@ maatml rollout ~/models/my-policy --env line_world \
 
 Episodes land in `<model-dir>/output/episodes/<source>-r<round>/episodes.jsonl`
 with `episodes.summary.json` beside them.
+
+Episode completions stream progress during collection. Summaries include Wilson
+intervals for measured success rates; offline decision accuracy and closed-loop
+task success remain separate evidence.
 
 ## The environment protocol
 

@@ -10,6 +10,11 @@ for the Python package and per-model versions under `examples/`.
 
 ### Fixed
 
+- Chat rendering and masking pass tool definitions and template options as
+  explicit typed arguments. Tool-call normalization narrows the optional
+  function payload before reading it. This clears the type-check failures
+  without changing message normalization or assistant loss masks.
+
 - Causal SFT masked non-final assistant turns of a multi-turn row against
   shifted offsets: Qwen3 renders an empty think block only on the final
   assistant turn, so each earlier target started late and ran into the next
@@ -20,6 +25,13 @@ for the Python package and per-model versions under `examples/`.
   section's gates were the inline empty mapping `gates: {}`: the rewriter
   kept that line and put the block beneath it. The line now becomes a block
   head.
+
+### Documentation
+
+- Refresh the release status through 0.13.0 and distinguish implemented
+  Unreleased features from planned artifact distribution. Document generic
+  orchestration ownership, exact checkpoint recovery, portable run evidence,
+  tool-call training, rollout collection and train-only rows.
 
 ### Added
 

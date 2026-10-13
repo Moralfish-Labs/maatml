@@ -48,6 +48,7 @@ files that used to sit alongside it and drift out of sync.
 
 ```bash
 ruff check src tests scripts examples
+ruff format --check src tests scripts examples
 mypy src/maatml --ignore-missing-imports
 pytest tests/ examples/ -q
 ```
@@ -57,10 +58,10 @@ pytest tests/ examples/ -q
 New here? These are good first contributions: small, self-contained, and
 genuinely useful:
 
-- **Add an end-to-end training test for a language trainer.** The vision and VLM
-  examples exercise a real train→export run; `causal_sft` / `seq2seq` /
-  `multi_head` are still covered only by their plumbing. A tiny CPU smoke run
-  would close that gap.
+- **Extend real trainer coverage.** CI already runs a tiny causal SFT CPU
+  lifecycle through export and verification, then checks an idempotent rerun.
+  Add comparable coverage for other architectures and recovery paths; one
+  trainer's smoke pass does not establish every backend.
 - **Add a broadly relatable example model.** Scaffold a new `examples/<task>/`
   for an everyday task (log triage, PII redaction, a small captioner). See the
   [plugin author guide](docs/plugins.md) and the

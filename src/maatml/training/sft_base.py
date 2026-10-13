@@ -212,15 +212,22 @@ def _legacy_assistant_labels(
 ) -> None:
     """Prefix-length masking used before span location. Kept only as the
     fallback for plain rows whose template renders turns non-incrementally."""
-    opts = {"tools": tools, "template_kwargs": template_kwargs}
     for i, msg in enumerate(rendered):
         if msg.get("role") != "assistant":
             continue
         prefix_ids = _render_then_tokenize(
-            rendered[:i], tokenizer, add_generation_prompt=True, **opts
+            rendered[:i],
+            tokenizer,
+            add_generation_prompt=True,
+            tools=tools,
+            template_kwargs=template_kwargs,
         )
         through_ids = _render_then_tokenize(
-            rendered[: i + 1], tokenizer, add_generation_prompt=False, **opts
+            rendered[: i + 1],
+            tokenizer,
+            add_generation_prompt=False,
+            tools=tools,
+            template_kwargs=template_kwargs,
         )
         for j in range(len(prefix_ids), min(len(through_ids), len(full_ids))):
             labels[j] = full_ids[j]
@@ -274,8 +281,17 @@ def build_chat_example(
         user_placeholder=user_placeholder,
     )
     tools, template_kwargs = chat_template_options(sample)
-    opts = {"tools": tools, "template_kwargs": template_kwargs}
-    text = render_chat(rendered, tokenizer, add_generation_prompt=False, **opts) if rendered else ""
+    text = (
+        render_chat(
+            rendered,
+            tokenizer,
+            add_generation_prompt=False,
+            tools=tools,
+            template_kwargs=template_kwargs,
+        )
+        if rendered
+        else ""
+    )
     full_ids = _tokenize_text(text, tokenizer) if text else []
     labels: list[int] = [-100] * len(full_ids)
     spans: list[tuple[int, int, int]] = []
@@ -291,7 +307,13 @@ def build_chat_example(
                 "(does it support tools=?)"
             )
     try:
-        char_spans = assistant_char_spans(rendered, tokenizer, full_text=text, **opts)
+        char_spans = assistant_char_spans(
+            rendered,
+            tokenizer,
+            full_text=text,
+            tools=tools,
+            template_kwargs=template_kwargs,
+        )
         for span in char_spans:
             start = _token_boundary(text, span.start, full_ids, tokenizer)
             end = _token_boundary(text, span.end, full_ids, tokenizer)
@@ -308,7 +330,14 @@ def build_chat_example(
             raise ChatSpanError(f"row {sample.get('sample_id')}: {exc}") from exc
         labels = [-100] * len(full_ids)
         spans = []
-        _legacy_assistant_labels(rendered, tokenizer, full_ids, labels, **opts)
+        _legacy_assistant_labels(
+            rendered,
+            tokenizer,
+            full_ids,
+            labels,
+            tools=tools,
+            template_kwargs=template_kwargs,
+        )
 
     if len(full_ids) > max_length:
         full_ids = full_ids[-max_length:]

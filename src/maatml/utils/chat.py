@@ -75,7 +75,9 @@ class ParsedAssistant:
 def _normalize_tool_call(call: Any) -> Optional[dict[str, Any]]:
     if not isinstance(call, dict):
         return None
-    fn = call.get("function") if isinstance(call.get("function"), dict) else call
+    fn = call.get("function")
+    if not isinstance(fn, dict):
+        fn = call
     name = fn.get("name")
     if not isinstance(name, str) or not name:
         return None
@@ -275,14 +277,31 @@ def assistant_char_spans(
     with thinking on drops it from the body. The smallest omission wins, and
     the supervised span is whatever of ``body`` remains.
     """
-    opts = {"tools": tools, "template_kwargs": template_kwargs}
     spans: list[AssistantSpan] = []
     for i, msg in enumerate(messages):
         if msg.get("role") != "assistant":
             continue
-        before = _render_or_empty(messages[:i], tokenizer, add_generation_prompt=False, **opts)
-        prompt = _render_or_empty(messages[:i], tokenizer, add_generation_prompt=True, **opts)
-        through = render_chat(messages[: i + 1], tokenizer, add_generation_prompt=False, **opts)
+        before = _render_or_empty(
+            messages[:i],
+            tokenizer,
+            add_generation_prompt=False,
+            tools=tools,
+            template_kwargs=template_kwargs,
+        )
+        prompt = _render_or_empty(
+            messages[:i],
+            tokenizer,
+            add_generation_prompt=True,
+            tools=tools,
+            template_kwargs=template_kwargs,
+        )
+        through = render_chat(
+            messages[: i + 1],
+            tokenizer,
+            add_generation_prompt=False,
+            tools=tools,
+            template_kwargs=template_kwargs,
+        )
         if not full_text.startswith(before):
             raise ChatSpanError(f"turn {i}: the render of the turns before it is not a prefix")
         if not prompt.startswith(before):

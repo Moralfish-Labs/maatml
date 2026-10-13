@@ -474,7 +474,9 @@ def test_rewrite_opens_an_inline_empty_gates_mapping() -> None:
 
     text = "evaluation:\n  slices: [family]\n  gates: {}\n\ntraining:\n  epochs: 1\n"
     result = DeriveResult(section="evaluation", runs=["r"], benchmark_sha256="b" * 64)
-    result.floors["decision_accuracy_rate"] = Floor("decision_accuracy_rate", 0.97, "c", "wilson", "r")
+    result.floors["decision_accuracy_rate"] = Floor(
+        "decision_accuracy_rate", 0.97, "c", "wilson", "r"
+    )
     out = rewrite_gates_block(text, result, {})
     loaded = yaml.safe_load(out)
     assert loaded["evaluation"]["gates"] == {"decision_accuracy_rate": 0.97}

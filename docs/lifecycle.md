@@ -109,6 +109,10 @@ record that travels. Those are lifecycle steps too; see [Evidence](evidence.md).
 
 ## One command for the whole lifecycle
 
+An external orchestrator can invoke this command or individual stages on a
+remote worker. Provisioning, transfers and recovery policy remain outside
+maatml; see [orchestration and recovery](orchestration.md).
+
 ```bash
 maatml run <model-dir>            # prepare -> train -> evaluate -> export -> verify
 maatml run <model-dir> --smoke    # the same walk at the smoke tier
@@ -161,6 +165,24 @@ Every evaluate also reports **pathologies** (`never_fires`, `identical_output`,
 rehearsal floor loose enough for a broken model cannot be cleared by one.
 
 `maatml plan <model-dir>` is the same view as `run --dry-run`.
+
+## Tool-call chat training (unreleased)
+
+Causal SFT rows can carry `messages`, per-row `tools`, and
+`chat_template_kwargs`. Assistant messages preserve `tool_calls`; tool-result
+messages preserve their role, name and call ID. The template receives the same
+tool definitions during training and prediction.
+
+Every assistant turn is supervised, including tool calls. System messages,
+user messages, tool results and the tool-definition preamble are masked from
+the loss. The trainer locates assistant spans in the complete rendered chat
+and checks their token decoding, including templates that render intermediate
+assistant turns differently from the final turn. If a tool row cannot be
+matched exactly, training rejects it rather than accepting shifted labels.
+
+`scripts/check_chat_masks.py --help` describes the offline masking check using
+a cached tokenizer. This feature is in source after 0.13.0; do not assume an
+installed 0.13.0 wheel supports it.
 
 ## What each stage refuses to do quietly
 

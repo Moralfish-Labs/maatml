@@ -26,6 +26,7 @@ pip install -e ".[dev,ml]"
 # Test / lint (run from repo root)
 .venv/bin/python -m pytest tests/ examples/ -q
 ruff check src tests scripts examples
+ruff format --check src tests scripts examples
 mypy src/maatml --ignore-missing-imports
 
 # Per-model lifecycle (any standalone folder with model.yml)
@@ -50,6 +51,7 @@ mypy src/maatml --ignore-missing-imports
 .venv/bin/maatml runs     examples/<name>/ [--compare] [--metric K] [--limit N]
 .venv/bin/maatml audit    [examples/<name>/] [--json]
 .venv/bin/maatml plugins
+.venv/bin/maatml rollout ~/models/my-policy --env line_world --tasks '{"count": 50, "seed": 1}' --label
 # Global: maatml --debug <command> prints tracebacks for user errors
 # (missing file, unparseable model.yml, unknown plugin), which otherwise
 # print a single line.
@@ -66,7 +68,9 @@ torchrun --nproc_per_node=N -m maatml.cli train examples/<name>/
 .venv/bin/python examples/vision-describer/scripts/build_seeds.py --target 400
 ```
 
-See also [ROADMAP.md](ROADMAP.md) for v0.4 product surface and later tranches.
+See [ROADMAP.md](ROADMAP.md) for the 0.13.0 release boundary, implemented
+Unreleased work and planned tranches. See [docs/orchestration.md](docs/orchestration.md)
+for worker and checkpoint ownership; external orchestration stays outside core.
 
 ## Architecture
 

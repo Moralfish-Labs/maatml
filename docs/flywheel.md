@@ -16,6 +16,15 @@ datagen / ingest / distill / mint / (reviewed capture)
 maatml run   # prepare is now stale, so the loop retrains
 ```
 
+## Policy-collected rows (unreleased)
+
+`maatml rollout --label` collects teacher labels at states reached by a
+checkpoint. The task's format plugin turns these episodes into training rows.
+`prepare_rows(..., train_rows=...)` adds them only to train and refuses groups
+already present in val or test. This keeps collected experience from silently
+moving the evaluation population. See [Rollouts](rollouts.md) for the protocol,
+teacher mixing and independently verified outcomes.
+
 ## `maatml datagen`: generate rows
 
 Runs a registered generator (or a teacher) and keeps only rows the validator

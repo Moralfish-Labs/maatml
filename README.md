@@ -22,6 +22,21 @@ Site: [maatml.pages.dev](https://maatml.pages.dev) ·
 PyPI: [`maatml`](https://pypi.org/project/maatml/) ·
 Source: [github.com/moralfish/maatml](https://github.com/moralfish/maatml)
 
+## Implementation and release status
+
+The package version is **0.13.0**. The source checkout also contains unreleased
+rollout/DAgger collection, train-only dataset rows, tool-call chat training,
+and multi-turn masking fixes. These are implemented features, not guarantees
+about an installed 0.13.0 wheel; see [CHANGELOG.md](CHANGELOG.md) for the release
+boundary and [ROADMAP.md](ROADMAP.md) for remaining work.
+
+MaatML owns the model lifecycle and its evidence. Model folders own task
+contracts and recipes; an external orchestrator owns remote machines,
+scheduling, storage transfers, monitoring, and recovery policy. The
+[orchestration guide](docs/orchestration.md) describes how to keep those
+responsibilities separate while carrying checkpoints and run records between
+machines.
+
 
 ## Installation
 
@@ -85,15 +100,17 @@ laptop and deploy to the edge or vLLM.
   verify` / `serve`), as one command: `maatml run`, which skips steps that are
   already fresh and stops non-zero at the first failure. It is **not** a
   general-purpose workflow scheduler: no triggers, no arbitrary shell/Python
-  steps, no remote executors. Drop `maatml train` into MLflow / Prefect /
-  Metaflow when you need that.
+  steps, no remote executors. An external orchestrator can invoke its CLI on
+  local machines, notebook GPUs, or GPU VMs; see
+  [orchestration and recovery](docs/orchestration.md).
 - **Its niche:** local-first, multimodal, structured-output models with
   correctness gated *outside* the model, from data generation through serving.
 
 ## Requirements
 
 - **Python** 3.10+ (developed against 3.13)
-- **OS** macOS, Linux (Windows untested)
+- **OS** macOS and Linux; Windows has a torch-free CLI/test CI job, not a
+  demonstrated GPU training path
 - **Disk / memory** ~3 GB for the ML stack; 16 GB unified memory is the design
   target for local training
 
@@ -127,6 +144,7 @@ line; `maatml --debug <command>` prints the traceback.
 | `plan` | Show which lifecycle steps are stale (alias for `run --dry-run`) |
 | `plugins` | List discovered trainers, validators, and metrics |
 | `audit` | Check the environment, plugins, and a model folder; exits 1 on problems |
+| `rollout` (unreleased) | Run a checkpoint in a verifying environment; `--label` collects teacher labels for DAgger, and `--teacher-mix` mixes teacher decisions |
 | `scaffold` | Create a new model folder (`--architecture`, `--plugin`, `--force`) |
 | `validate` | Check `model.yml` and paths (`--no-plugins` skips plugin code) |
 
@@ -140,6 +158,10 @@ QLoRA (CUDA + `[cuda]`): set `training.quantization.load_in_4bit: true` in
 Export defaults to a safetensors bundle + `manifest.json`. GGUF/MLX need
 external tooling (`llama.cpp` convert / `mlx_lm`). Pin base-model revisions
 with `training.model_revision`.
+
+The unreleased causal SFT path also preserves per-row tool definitions,
+assistant tool calls and tool results. It supervises every assistant turn and
+masks the other roles; see [tool-call chat training](docs/lifecycle.md#tool-call-chat-training-unreleased).
 
 Docs: [maatml.pages.dev](https://maatml.pages.dev) · Roadmap: [ROADMAP.md](ROADMAP.md) ·
 In-repo docs: `docs/` (`pip install "maatml[docs]"` then `mkdocs serve`).

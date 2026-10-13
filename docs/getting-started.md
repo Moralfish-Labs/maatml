@@ -1,9 +1,10 @@
-# Get started in 5 minutes
+# Get started
 
 The fastest path from a clean checkout to a served model uses
 [support-ticket-triage](examples/support-ticket-triage.md): a LoRA fine-tune of
 Qwen3-0.6B that turns a raw support ticket into `{priority, category, team,
-summary}` JSON. Everything below runs on CPU.
+summary}` JSON. Runtime depends on downloads and hardware; full training is
+best run on a GPU. Use the smoke tier to check the pipeline first.
 
 ## 1. Install
 

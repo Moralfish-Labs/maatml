@@ -28,9 +28,11 @@ pip install "maatml[docs]"     # this site: mkdocs serve
 
 ## Documentation
 
-- [Get started](getting-started.md): install and serve your first model in 5 minutes
+- [Get started](getting-started.md): install, smoke-test, train and serve a model
 - [The validator-gated lifecycle](lifecycle.md): the core idea, end to end
 - [Evidence](evidence.md): derived floors, the ship decision, operating points, named populations, licences, portable runs
+- [Orchestration and recovery](orchestration.md): CLI ownership, remote workers, checkpoint continuation and portable evidence
+- [Rollouts](rollouts.md): environment verification and DAgger collection (unreleased)
 - [Serving & deployment](serving.md): `maatml serve`, ONNX/edge, and vLLM (VLMs)
 - [Plugin author guide](plugins.md): register trainers, validators, metrics, exporters, generators
 - [Examples](examples/index.md): four reference models, from support-ticket triage to a vLLM-servable VLM
@@ -54,6 +56,17 @@ Canonical references in the repo:
 | `maatml verify` | Recompute sha256 of manifest files |
 | `maatml serve` | JSON inference API, validator inline (`/predict?validate=1`) |
 | `maatml datagen` / `distill` / `ingest` / `mint` | Validator-gated [data flywheel](flywheel.md) |
+| `maatml run` / `plan` | Fixed lifecycle and freshness planning |
+| `maatml rollout` (unreleased) | Environment-verified episodes and optional teacher labels |
 
 See the [Plugin author guide](plugins.md) for registering generators, exporters,
 validators, and metrics.
+
+## Release boundary
+
+The package version is **0.13.0**. These docs also cover unreleased source
+features: rollouts, train-only rows, tool-call chat training, and corrected
+multi-turn masking. Check the command's availability in your installed version;
+the repository changelog distinguishes shipped releases from Unreleased work.
+Model recipes and task plugins remain independent of the framework, while
+external orchestrators manage compute, storage and monitoring.

@@ -18,6 +18,7 @@ task semantics** and register them via decorators.
 | exporter | `@register_exporter` | `maatml export --format …` |
 | compiler | `@register_compiler` | `maatml compile --target …` (TensorRT, vLLM package, GGUF quantize, …) |
 | server | `@register_server` | `maatml serve --server …` (HTTP, DeepStream, vLLM, llama.cpp, …) |
+| environment (unreleased) | `@register_environment` | Legal candidates, teacher labels, state transitions and independent verification for [rollouts](rollouts.md) |
 
 List everything with `maatml plugins`. Compilers and servers are **format-agnostic**:
 core dispatches and writes a thin `target_manifest.json`; the plugin owns the
