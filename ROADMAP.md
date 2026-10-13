@@ -1,12 +1,12 @@
 # MaatML Roadmap
 
-MaatML is a **machine learning models framework from experimentation to
-production**: data pipelines (validator-checked seed generation and ingestion) →
-training → evaluation → export → deploy, with plugins that **optimize, distill,
-and distribute** models to run anywhere. Purpose: task-specific domain language
-models with a small footprint, from a multi-gigabyte base model to a small
-subject-matter expert. Correctness is checked outside the model via validators
-(the Maat weighing thesis).
+MaatML is where a small, task-specific model is built, weighed, and packaged.
+The runtime is where it answers. The lifecycle runs validator-checked seed
+generation and ingestion → training → evaluation → export → serving, with
+plugins that distill models and export them to the runtimes that load them.
+Purpose: task-specific domain language models with a small footprint, from a
+multi-gigabyte base model to a small subject-matter expert. Correctness is
+checked outside the model via validators (the Maat weighing thesis).
 
 **Design rule:** core owns architectures (`causal_sft`, `seq2seq`,
 `multi_head_classifier`, `dpo` / `orpo`); examples own task semantics

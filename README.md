@@ -5,10 +5,10 @@
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](pyproject.toml)
 [![CI](https://github.com/moralfish/maatml/actions/workflows/ci.yml/badge.svg)](https://github.com/moralfish/maatml/actions/workflows/ci.yml)
 
-**MaatML** fine-tunes small, task-specific models across **text, vision, and
-vision-language**, and takes them from experimentation to production through a
-single declarative `model.yml`: **prepare → train → evaluate → export → serve**.
-Licensed under **Apache-2.0**.
+**MaatML** is where a small, task-specific model is built, weighed, and
+packaged, across **text, vision, and vision-language**. One declarative
+`model.yml` drives **prepare → train → evaluate → export → serve**. The runtime
+is where the model answers. Licensed under **Apache-2.0**.
 
 **What makes it different:** correctness is checked *outside* the model by
 **validators**. The same validator gates your synthetic **data** and your

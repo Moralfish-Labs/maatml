@@ -1,8 +1,9 @@
 # MaatML
 
-MaatML fine-tunes small, task-specific models across **text, vision, and
-vision-language**, and takes them from experimentation to production through one
-declarative `model.yml`: **prepare → train → evaluate → export → serve**.
+MaatML is where a small, task-specific model is built, weighed, and packaged,
+across **text, vision, and vision-language**. One declarative `model.yml` drives
+**prepare → train → evaluate → export → serve**. The runtime is where the model
+answers.
 
 **What makes it different:** correctness is checked *outside* the model by
 [validators](lifecycle.md). The same validator gates your synthetic **data** and
