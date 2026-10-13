@@ -180,10 +180,16 @@ def _policy_folder(tmp_path: Path, body: str) -> Path:
     return model_dir
 
 
-def test_cli_rollout_stores_labelled_episodes(tmp_path: Path) -> None:
+def test_cli_rollout_stores_labelled_episodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from typer.testing import CliRunner
 
     from maatml.cli import app
+
+    # This fake predictor needs no tensor runtime; device discovery is covered
+    # separately by the device tests and the ML smoke job.
+    monkeypatch.setattr("maatml.device.resolve_device", lambda device: "cpu")
 
     model_dir = _policy_folder(
         tmp_path,
