@@ -18,7 +18,7 @@ task semantics** and register them via decorators.
 | exporter | `@register_exporter` | `maatml export --format …` |
 | compiler | `@register_compiler` | `maatml compile --target …` (TensorRT, vLLM package, GGUF quantize, …) |
 | server | `@register_server` | `maatml serve --server …` (HTTP, DeepStream, vLLM, llama.cpp, …) |
-| environment (unreleased) | `@register_environment` | Legal candidates, teacher labels, state transitions and independent verification for [rollouts](rollouts.md) |
+| environment | `@register_environment` | Legal candidates, teacher labels, state transitions and independent verification for [rollouts](rollouts.md) |
 
 `maatml plugins` lists built-ins and discoverable installed plugins; it does
 not load an arbitrary model folder. Use `maatml audit <model-dir>` to check

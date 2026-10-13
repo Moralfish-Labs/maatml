@@ -170,7 +170,9 @@ rehearsal floor loose enough for a broken model cannot be cleared by one.
 
 `maatml plan <model-dir>` is the same view as `run --dry-run`.
 
-## Tool-call chat training (unreleased)
+<span id="tool-call-chat-training-unreleased"></span>
+
+## Tool-call chat training
 
 Causal SFT rows can carry `messages`, per-row `tools`, and
 `chat_template_kwargs`. Assistant messages preserve `tool_calls`; tool-result
@@ -185,8 +187,8 @@ assistant turns differently from the final turn. If a tool row cannot be
 matched exactly, training rejects it rather than accepting shifted labels.
 
 `scripts/check_chat_masks.py --help` describes the offline masking check using
-a cached tokenizer. This feature is in source after 0.13.0; do not assume an
-installed 0.13.0 wheel supports it.
+a cached tokenizer. Tool-call chat training is available in 0.14.0 and later;
+upgrade older installations before using it.
 
 ## What each stage refuses to do quietly
 

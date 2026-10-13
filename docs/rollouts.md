@@ -1,7 +1,6 @@
 # Rollouts
 
-This guide describes implemented source features after **0.13.0**, currently
-listed under Unreleased. Check `maatml rollout --help` in the environment that
+Rollout collection is available in **0.14.0** and later. Check `maatml rollout --help` in the environment that
 will run the job.
 
 A rollout is a trained policy acting in an environment, one decision at a

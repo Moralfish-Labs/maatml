@@ -30,7 +30,7 @@ else. Registration happens in a folder-local package named in `model.yml`
 | exporter | `@register_exporter` | `maatml export --format ...` |
 | compiler | `@register_compiler` | `maatml compile --target ...` |
 | server | `@register_server` | `maatml serve --server ...` |
-| environment (unreleased) | `@register_environment` | Rollout state transitions and verification |
+| environment | `@register_environment` | Rollout state transitions and verification |
 | scaffold hook | `@register_scaffold_hook` | Defaults for a plugin-owned architecture |
 
 `maatml plugins` lists built-ins and discoverable installed plugins; `maatml audit <dir>` says whether

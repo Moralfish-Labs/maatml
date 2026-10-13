@@ -16,7 +16,7 @@ datagen / ingest / distill / mint / (reviewed capture)
 maatml run   # prepare is now stale, so the loop retrains
 ```
 
-## Policy-collected rows (unreleased)
+## Policy-collected rows
 
 `maatml rollout --label` collects teacher labels at states reached by a
 checkpoint. The task's format plugin turns these episodes into training rows.
