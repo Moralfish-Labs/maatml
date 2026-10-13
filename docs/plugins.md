@@ -18,8 +18,11 @@ task semantics** and register them via decorators.
 | exporter | `@register_exporter` | `maatml export --format …` |
 | compiler | `@register_compiler` | `maatml compile --target …` (TensorRT, vLLM package, GGUF quantize, …) |
 | server | `@register_server` | `maatml serve --server …` (HTTP, DeepStream, vLLM, llama.cpp, …) |
+| environment (unreleased) | `@register_environment` | Legal candidates, teacher labels, state transitions and independent verification for [rollouts](rollouts.md) |
 
-List everything with `maatml plugins`. Compilers and servers are **format-agnostic**:
+`maatml plugins` lists built-ins and discoverable installed plugins; it does
+not load an arbitrary model folder. Use `maatml audit <model-dir>` to check
+that folder's registrations. Compilers and servers are **format-agnostic**:
 core dispatches and writes a thin `target_manifest.json`; the plugin owns the
 engine. Do not assume ONNX or an in-process predictor.
 
@@ -65,9 +68,12 @@ from maatml.registry import register_generator
 @register_generator("my_task")
 def my_generator(model_def, *, seed: int = 0, **kwargs):
     def generate_fn():
-        return {"sample_id": "...", "request": "...", "target": {...}}
+        return {"sample_id": "...", "request": "...", "expected": {...}}
     return generate_fn
 ```
+
+Match the row keys to `dataset.request_field` and `dataset.target_field`;
+use a distinct sample ID for each candidate.
 
 Core runs `build_gated_corpus(generate_fn, validate_fn, target_n=…)` and
 appends accepted rows to `dataset.seed_samples`, skipping rows already in the
@@ -115,9 +121,13 @@ a lookalike copy makes `maatml datagen` reject every row it generates.
 
 ## Exporters (`maatml export`)
 
-Built-ins: `safetensors` (always), `gguf` / `mlx` (optional tooling). Custom:
+Built-ins: `safetensors`, `gguf` / `mlx` (optional tooling). The vision example
+registers `onnx` / `vision_onnx` from its plugin. Custom:
 
 ```python
+from maatml.registry import register_exporter
+
+
 @register_exporter("my_fmt")
 def export_my_fmt(model_def, checkpoint_dir, out_dir, *, run_id=None):
     ...
@@ -159,6 +169,9 @@ plugins have run) for a blank slate; `reset_registries(rediscover=True)`
 re-imports the built-ins afterwards. `REGISTRY.unregister(name)` drops one
 entry. `discover_plugins()` only adds registrations, so it never removes what a
 model folder registered.
+
+For validator, metrics, predictor and generator implementations, see the
+[plugin contracts reference](skill/references/plugins.md).
 
 ## Deprecation policy
 

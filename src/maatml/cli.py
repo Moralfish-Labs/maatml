@@ -1713,9 +1713,129 @@ def cmd_audit(
         raise typer.Exit(code=1)
 
 
+@app.command("rollout")
+def cmd_rollout(
+    model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    env: Optional[str] = typer.Option(
+        None, "--env", help="A registered environment plugin, e.g. line_world"
+    ),
+    env_command: Optional[str] = typer.Option(
+        None,
+        "--env-command",
+        help="Command serving the maatml.rollout_env/1 protocol over stdio",
+    ),
+    tasks: str = typer.Option(
+        "{}", "--tasks", help="JSON task query passed to the environment's `tasks`"
+    ),
+    checkpoint: Optional[str] = typer.Option(
+        None, "--checkpoint", help="run_id or checkpoint dir; defaults to latest completed run"
+    ),
+    device: str = typer.Option("auto", "--device"),
+    label: bool = typer.Option(
+        False, "--label", help="Record the environment teacher's valid set at every state"
+    ),
+    teacher_mix: float = typer.Option(
+        0.0, "--teacher-mix", help="Probability of acting with the teacher (needs --label)"
+    ),
+    option: list[str] = typer.Option(
+        [], "--option", help="KEY=VALUE passed to `reset` (repeatable), e.g. extra_steps=8"
+    ),
+    source: Optional[str] = typer.Option(
+        None, "--source", help="Episode provenance; defaults to dagger with --label, else rollout"
+    ),
+    round_index: int = typer.Option(0, "--round"),
+    seed: int = typer.Option(0, "--seed"),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Defaults to <model-dir>/output/episodes/<source>-r<round>"
+    ),
+) -> None:
+    """Act with a checkpoint in an environment and store the episodes it verifies."""
+    import json
+    import shlex
+    from time import monotonic
+
+    from .device import resolve_device
+    from .registry import ENVIRONMENTS, PREDICTORS
+    from .rollout import RolloutConfig, StdioEnvironment, rollout, write_episodes
+    from .runs import resolve_checkpoint, run_id_for_checkpoint
+
+    if bool(env) == bool(env_command):
+        raise ValueError("pass exactly one of --env and --env-command")
+    md = load_model_def(model_dir)
+    _boot_plugins(md)
+
+    name = (md.evaluation or {}).get("predictor") or md.architecture
+    predictor = PREDICTORS.require(str(name))
+    if isinstance(predictor, type):
+        predictor = predictor()
+    if not callable(getattr(predictor, "score", None)):
+        raise ValueError(
+            f"predictor {name!r} has no score(observation, candidates); "
+            "a rollout policy must rank an environment's candidates"
+        )
+    checkpoint_dir = resolve_checkpoint(md, checkpoint)
+    started = monotonic()
+    console.print(f"[cyan]rollout[/] loading checkpoint {checkpoint_dir}")
+    predictor.setup(checkpoint_dir, model_def=md, device=resolve_device(device))
+
+    options: dict[str, object] = {}
+    for item in option:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise ValueError(f"--option wants KEY=VALUE, not {item!r}")
+        try:
+            options[key] = json.loads(value)
+        except json.JSONDecodeError:
+            options[key] = value
+    source = source or ("dagger" if label else "rollout")
+    config = RolloutConfig(
+        source=source,
+        policy_version=run_id_for_checkpoint(md, checkpoint_dir),
+        round=round_index,
+        label=label,
+        teacher_mix=teacher_mix,
+        options=options,
+        seed=seed,
+    )
+    out_dir = out or md.model_dir / "output" / "episodes" / f"{source}-r{round_index}"
+    environment = (
+        StdioEnvironment(shlex.split(env_command))
+        if env_command
+        else ENVIRONMENTS.require(str(env))()
+    )
+    try:
+        task_list = environment.tasks(json.loads(tasks))
+        if not task_list:
+            raise ValueError(f"the environment returned no tasks for {tasks}")
+        console.print(f"[cyan]rollout[/] 0/{len(task_list)} episodes completed")
+
+        def progress_episodes():
+            episodes = rollout(environment, predictor, task_list, config=config)
+            for completed, episode in enumerate(episodes, 1):
+                outcome = episode["outcome"]
+                console.print(
+                    f"[cyan]rollout[/] {completed}/{len(task_list)} episodes completed "
+                    f"task={episode['task_id']} status={outcome['status']} "
+                    f"decisions={outcome['decisions']} elapsed={monotonic() - started:.1f}s"
+                )
+                yield episode
+
+        summary = write_episodes(progress_episodes(), out_dir)
+    finally:
+        if isinstance(environment, StdioEnvironment):
+            environment.shutdown()
+    console.print(
+        f"[green]rollout complete[/] {summary['success']}/{summary['episodes']} verified "
+        f"({summary['success_rate']:.1%}), {summary['decisions']} decisions, "
+        f"{summary['truncated']} truncated -> {out_dir}"
+    )
+    for family, bucket in summary["families"].items():
+        console.print(f"  {family}: {bucket['success']}/{bucket['episodes']}")
+
+
 @app.command("plugins")
 def cmd_plugins() -> None:
-    """List registered trainers, validators, metrics, formats, servers, compilers."""
+    """List registered trainers, validators, metrics, formats, servers, compilers, environments."""
     discover_plugins()
     # Import submodule directly so listing plugins does not require torch.
     from . import servers as _servers  # noqa: F401

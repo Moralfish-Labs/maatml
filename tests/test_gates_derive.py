@@ -465,3 +465,21 @@ def test_cli_gates_derive_reports_a_missing_run(tmp_path: Path) -> None:
     result = runner.invoke(app, ["gates", "derive", str(mdir), "--run", "nope"])
     assert result.exit_code != 0
     assert "no eval report" in result.output
+
+
+def test_rewrite_opens_an_inline_empty_gates_mapping() -> None:
+    import yaml
+
+    from maatml.evaluation.gates import DeriveResult, Floor
+
+    text = "evaluation:\n  slices: [family]\n  gates: {}\n\ntraining:\n  epochs: 1\n"
+    result = DeriveResult(section="evaluation", runs=["r"], benchmark_sha256="b" * 64)
+    result.floors["decision_accuracy_rate"] = Floor(
+        "decision_accuracy_rate", 0.97, "c", "wilson", "r"
+    )
+    out = rewrite_gates_block(text, result, {})
+    loaded = yaml.safe_load(out)
+    assert loaded["evaluation"]["gates"] == {"decision_accuracy_rate": 0.97}
+    assert loaded["evaluation"]["gates_benchmark"] == "b" * 64
+    assert loaded["training"] == {"epochs": 1}
+    assert "gates: {}" not in out

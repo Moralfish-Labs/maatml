@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for the Python package and per-model versions under `examples/`.
 
+## [Unreleased]
+
+### Changed
+
+- Refreshed documentation and example setup against the current CLI and plugin
+  contracts. Added a CLI reference, troubleshooting and contributor pages;
+  exposed configuration and agent references in MkDocs navigation. Strict
+  documentation builds now check navigation, local links and anchors in CI.
+
+### Fixed
+
+- Chat rendering and masking pass tool definitions and template options as
+  explicit typed arguments. Tool-call normalization narrows the optional
+  function payload before reading it. This clears the type-check failures
+  without changing message normalization or assistant loss masks.
+
+- Causal SFT masked non-final assistant turns of a multi-turn row against
+  shifted offsets: Qwen3 renders an empty think block only on the final
+  assistant turn, so each earlier target started late and ran into the next
+  user turn. Assistant spans are now located on one full render and decoded
+  back before they are trained; single-turn rows mask byte-identically.
+
+- `maatml gates derive --write` left `model.yml` unparseable when the
+  section's gates were the inline empty mapping `gates: {}`: the rewriter
+  kept that line and put the block beneath it. The line now becomes a block
+  head.
+
+### Documentation
+
+- Refresh the release status through 0.13.0 and distinguish implemented
+  Unreleased features from planned artifact distribution. Document generic
+  orchestration ownership, exact checkpoint recovery, portable run evidence,
+  tool-call training, rollout collection and train-only rows.
+
+### Added
+
+- **Tool-call chat rows in causal SFT.** Rows may carry `tools` (passed to
+  the chat template as `tools=`), `chat_template_kwargs` (per-row template
+  variables such as `enable_thinking`), assistant `tool_calls`, and `tool`
+  turns. Every assistant turn, tool-call turns included, is a supervised
+  target; system, user, tool results and the tools preamble are masked. A
+  tool row whose spans cannot be located exactly raises instead of training.
+  `prepare` checks the structure of these fields, the `causal_sft` predictor
+  renders tool rows with their tools (`prompt_ids`) and parses
+  `<tool_call>` blocks back (`predict_structured`,
+  `maatml.utils.chat.parse_tool_calls`). `scripts/check_chat_masks.py`
+  dry-runs rendering and masking over a rows file with a cached tokenizer.
+
+- **`maatml rollout` and the rollout environment protocol
+  (`maatml.rollout_env/1`).** A checkpoint acts in an environment that lists
+  the legal candidates, applies the chosen one, and verifies the outcome
+  itself. The driver records every decision with its log-probabilities and,
+  with `--label`, the valid set the environment's teacher accepts at each
+  state the policy reached, which is what DAgger relabeling trains on.
+  Environments plug in as the new `environment` plugin kind or as any program
+  speaking JSON lines over stdio (`--env-command`). `line_world` ships as the
+  example environment. See `docs/rollouts.md`.
+- **Train-only rows in `prepare_rows`.** `train_rows` join train after the
+  hash split and never reach val or the benchmark, so rows a policy collected
+  from its own rollouts train the next round without moving the numbers
+  earlier runs were measured on. A train-only row whose group is already in
+  val or test is refused.
+
 ## [0.13.0] - 2026-08-28
 
 ### Fixed
@@ -867,7 +930,7 @@ plugin security floor, and config honesty.
 - **Renamed the project from flow-ml to MaatML.** Package / CLI / entry-point
   group are now `maatml` / `maatml` / `maatml.plugins`. Resolves the name
   collision with [MLflow](https://mlflow.org/). GitHub repo:
-  [moralfish/maatml](https://github.com/moralfish/maatml).
+  [Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maatml).
 - **Examples-first restructure:** `jcl-validator` and `spool-interpreter` live
   under `examples/` with folder-local plugins (`jcl_plugin` / `spool_plugin`).
   Core owns architectures (`causal_sft`, `seq2seq`, `multi_head_classifier`);

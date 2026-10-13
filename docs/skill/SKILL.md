@@ -45,6 +45,7 @@ maatml runs <model-dir> [--compare]  # what has been recorded
 maatml runs <model-dir> --pack RUN   # the run, its evidence and its record, in one tar
 maatml runs <model-dir> --adopt B    # unpack a bundle here; refuses another recipe
 maatml report <model-dir>            # runs, floors with derivation, slices, seeds, spends
+maatml rollout <model-dir> --env line_world --tasks '{"count": 50}' --label  # unreleased
 ```
 
 `run` skips steps whose fingerprint still matches — effective config, declared
@@ -56,6 +57,17 @@ holds it; `plan` prints which component changed.
 The source operations — `datagen`, `distill`, `ingest`, `mint`, reviewed
 `serve --capture` — stay **outside** the runner. They change the seed corpus,
 which is exactly what makes `prepare` stale next run.
+
+Rollout collection also stays explicit. Its environment verifies outcomes;
+the format plugin can pass collected rows as `train_rows` to `prepare_rows`
+without moving held-out populations. Rollouts, train-only rows and tool-call
+chat training are implemented after 0.13.0 and remain Unreleased.
+
+External orchestration owns worker provisioning, storage transfers, monitoring
+and cleanup. For recovery, preserve mid-run checkpoints and use a verified
+explicit `--resume` path with the original recipe and inputs. `runs --pack`
+omits nested `checkpoint-*` directories unless `--with-checkpoints` is set; it carries completed-run evidence,
+not an interrupted-training backup.
 
 Depth, in this skill's own folder: `references/model-yml.md` for the config
 surface, `references/plugins.md` for registering a validator, predictor,
@@ -82,8 +94,9 @@ resisting the urge to train early:
    `ingest` — every added row gated by that same validator. See
    `references/flywheel.md`.
 6. `maatml run <dir> --smoke` to prove the lifecycle walks end to end on real
-   hardware, gated at the smoke tier. Expect it to fail its production gates;
-   that run exists to prove plumbing, not quality.
+   hardware. Declare `smoke.gates` for a separate smoke tier; without that
+   block, evaluation falls back to production gates. A smoke pass checks
+   plumbing, not production quality.
 7. Only then a full run, and derive the gates **from its report** with
    `maatml gates derive <dir> --run RUN --write` rather than guessing them up
    front.
@@ -98,9 +111,9 @@ stage has a reason for its order and the file it writes; hand-rolling one
 produces artifacts the next stage cannot read, and it surfaces three steps later
 as something else.
 
-Configuration lives in `model.yml`, once. A knob passed on a command line, set
-in a launch script or defaulted in a plugin is a knob the run record cannot
-report, and a run that cannot say what trained it is not a measurement.
+Keep durable recipe choices in `model.yml`. Supported CLI overrides are
+recorded, but ad hoc launch scripts and plugin defaults can still hide inputs.
+Preserve the effective configuration and environment with each run.
 
 ## Gates are measured, never chosen
 
@@ -117,8 +130,9 @@ all_layers_pass_rate:        0.94  # 401/414 = 0.969, w95 0.947
 release's own report and writes the derivation beside each floor; a folder
 never carries its own floor script and floors are never typed by hand. The
 denominators come from the report's `counts`; a metric under `--min-n` rows is
-refused, and a run with a prediction cache (`evaluate --cache`) gets a
-cluster bootstrap over its group key instead of the row-level bound.
+refused, and supported per-row rates with a prediction cache (`evaluate --cache`) use
+a cluster bootstrap over the group key. Other counted rates use Wilson; a
+metric without counts falls back to its observed value, not a confidence bound.
 Denominators differ by an order of magnitude in a multi-family model, so one
 shared floor is either unreachable for the small families or vacuous for the
 large ones — which is what `"slice:<field>=<value>"` gates and
@@ -137,7 +151,7 @@ composition underneath it moves: the dominant family's own metric climbs as the
 displaced families' safety metrics fall, and the summary can read *highest* at
 the worst arm.
 
-A `--smoke` run enforces `smoke.gates` instead, and the pass is recorded as
+A `--smoke` run enforces `smoke.gates` when declared, and the pass is recorded as
 smoke-gated in the run record and in the export manifest's `gate_evidence`, so a
 rehearsal never reads later as a production gate pass. `output_nonempty_rate` is
 always reported and is what a smoke tier can honestly gate on: it says the
@@ -174,7 +188,7 @@ frozen candidate**, after a production gate pass, never before. Thresholds
 come from val (`maatml operating-point derive`); a `--confirm-on-test` is a
 recorded **test spend**, and a second one on the same benchmark warns.
 
-Every source a row carries must be signed in the `dataset.attribution` table
+When `dataset.attribution` is declared, every source must be signed in its table
 (licence, commercial-use, sign-off); a `no` / `unknown` commercial-use enters
 only under an `accepted-risk — name date` sign-off, and the corpus lock
 carries the acceptance into the export manifest.
@@ -199,8 +213,9 @@ from documentation is a different version's contract, and it drifts silently.
 - **Put the validator in the path** with `--enforce --max-retries N`: a rejected
   reply goes back to the model carrying the validator's own message and is
   re-asked. That is the decline-with-a-note correction, automated.
-- **Q5_K_M over Q4_K_M** for anything citation-shaped. Quantization costs
-  citation fidelity specifically, and an aggregate hides it.
+- **Evaluate the deployed quantization.** Compare citation and tool-call
+  fidelity as well as aggregate scores; a full-precision gate pass does not
+  establish a quantized artifact's behavior.
 - `serve --capture` needs `--auth-token`; captured rows are proposals, and
   `ingest` refuses any still marked unapproved.
 
@@ -233,7 +248,10 @@ from documentation is a different version's contract, and it drifts silently.
 ## Before any change to maatml itself lands
 
 ```bash
-python -m pytest
+ruff check src tests scripts examples
+ruff format --check src tests scripts examples
+mypy src/maatml --ignore-missing-imports
+python -m pytest tests/ examples/ -q
 ```
 
 Read the run record before asking why a number moved: `maatml runs <dir>

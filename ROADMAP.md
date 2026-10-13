@@ -1,12 +1,12 @@
 # MaatML Roadmap
 
-MaatML is a **machine learning models framework from experimentation to
-production**: data pipelines (validator-checked seed generation and ingestion) →
-training → evaluation → export → deploy, with plugins that **optimize, distill,
-and distribute** models to run anywhere. Purpose: task-specific domain language
-models with a small footprint, from a multi-gigabyte base model to a small
-subject-matter expert. Correctness is checked outside the model via validators
-(the Maat weighing thesis).
+MaatML is where a small, task-specific model is built, weighed, and packaged.
+The runtime is where it answers. The lifecycle runs validator-checked seed
+generation and ingestion → training → evaluation → export → serving, with
+plugins that distill models and export them to the runtimes that load them.
+Purpose: task-specific domain language models with a small footprint, from a
+multi-gigabyte base model to a small subject-matter expert. Correctness is
+checked outside the model via validators (the Maat weighing thesis).
 
 **Design rule:** core owns architectures (`causal_sft`, `seq2seq`,
 `multi_head_classifier`, `dpo` / `orpo`); examples own task semantics
@@ -17,7 +17,8 @@ model folders.
 **Positioning:** MaatML runs its own **fixed** validator-gated lifecycle. It is
 not a general-purpose workflow scheduler or arbitrary DAG engine (no
 triggers/cron, no shell/python steps, no remote executors). Source-mutating
-operations (`datagen`, `ingest`, planned `distill`) stay explicit and outside
+operations (`datagen`, `ingest`, `distill`, `mint`, reviewed capture, and rollout
+collection) stay explicit and outside
 the default runner.
 
 **Claims rule:** the guarantee register ("gates", "cannot", "never") ships only
@@ -29,6 +30,10 @@ does not belong in them.
 
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
+
+Current package version: **0.13.0**. The Unreleased row describes implemented
+source changes that have not been assigned a new release version. Historical
+tranches below describe completed work; they are not the current task queue.
 
 | Tranche | Theme | Status |
 |---|---|---|
@@ -46,7 +51,32 @@ are ordered but unversioned.
 | v0.9.1 | Pluggable compile / serve runtimes, actionable `vision_scene` feedback, `maatml audit`, slimmer examples | Done |
 | v0.10 | Gated device compiles (`compile --require-gated`), shared capture path, `ingest --video`, Anthropic Messages wire, `diffusion_lora` | Done |
 | v0.11 | Evidence layer: derived gates, operating points, named populations, licensed sources, portable runs | Done |
+| v0.11.1–0.11.2 | Attribution fields and recorded evaluation overrides; operating-point config validation | Done |
+| v0.12 | Batched evaluation with per-row evidence and amortized latency reporting | Done |
+| v0.13 | Lifecycle evaluation-schema parity and CLI version reporting | Done |
+| Unreleased | Rollout environment protocol, DAgger labels, streamed progress and Wilson intervals; train-only rows; tool-call chat training and multi-turn masking; inline gate rewrite fix | Implemented; pending release |
 | — | Slim artifact distribution | Planned |
+
+## Current ownership and next work
+
+- **Framework:** the fixed lifecycle, plugin dispatch, dataset isolation,
+  training, evaluation, gate evidence, export, serving, and portable run records.
+- **Model folder:** task semantics, validators, metrics, architectures supplied
+  by plugins, datasets, recipes, and benchmarks.
+- **External orchestrator:** scheduling, notebook/VM provisioning, credentials,
+  object-storage transfers, monitoring, retry policy, and resource cleanup.
+  These remain outside the framework; see [orchestration](docs/orchestration.md).
+
+Before the next package release, run the lint, formatting, type, test,
+standalone-wheel and CPU lifecycle CI gates against the same revision, build
+the docs with `mkdocs build --strict`, and move the accepted Unreleased entries into versioned release
+notes. A passing unit suite does not establish every architecture/device
+combination or a model's production quality.
+
+The next planned product tranche remains slim artifact distribution. There is
+no `publish`/`pull` command or signing guarantee in the current CLI. Portable
+`runs --pack` / `--adopt` already exist for moving training evidence between
+machines; they are distinct from a public model distribution service.
 
 ## Non-goals
 
@@ -316,7 +346,7 @@ prepare ──► train ──► evaluate --gate ──► export ──► ver
                            └── gates fail → stop (non-zero)
 ```
 
-Explicit source ops (`datagen` / `ingest` / later `distill`) append to the seed
+Explicit source ops (`datagen` / `ingest` / `distill`) append to the seed
 corpus and stay **outside** the default runner; changing seeds makes `prepare`
 stale.
 

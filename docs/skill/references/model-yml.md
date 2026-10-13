@@ -1,8 +1,9 @@
 # `model.yml`: the whole configuration surface
 
-Every stage reads this file and nothing else. A knob passed on a command line,
-set in a launch script, or defaulted inside a plugin is a knob the run record
-cannot report — and a run that cannot say what trained it is not a measurement.
+`model.yml` is the recipe shared by the lifecycle. Supported CLI overrides
+are recorded with the operation that uses them; environment variables and
+plugin defaults also affect execution. Put durable recipe choices in this
+file and preserve the effective configuration with the run evidence.
 
 Start from `maatml scaffold <dir> --architecture causal_sft --name my-task`
 rather than a blank file; it writes the sections below with defaults that
@@ -295,6 +296,9 @@ arithmetic — a floor can be checked in a spreadsheet, which matters for a numb
 committed to a file as an auditable claim.
 
 ```python
+import math
+
+
 def wilson(k, n, z=1.96):
     p = k / n
     d = 1 + z * z / n
@@ -319,8 +323,8 @@ lets real regressions through. Wilson trades that guarantee for calibration.
 
 Wilson assumes independent Bernoulli trials. Test rows are grouped by scenario,
 so paraphrases of one situation are not independent: the effective sample size
-is below the row count, and these floors are correspondingly **slightly
-optimistic**. Twenty-seven rows drawn from nine scenarios is weaker evidence
+can be below the row count, so row-level bounds can overstate the
+evidence. The size of that effect depends on the correlation. Twenty-seven rows drawn from nine scenarios is weaker evidence
 than twenty-seven unrelated ones.
 
 This does not change the choice — every alternative assumes the same thing — but

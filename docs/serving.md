@@ -1,14 +1,18 @@
 # Serving & deployment
 
-A trained MaatML model has three deployment paths, from lightweight-local to
-production throughput. All of them serve the *same* exported checkpoint, and all
-can re-apply the model's [validator](lifecycle.md).
+Deployment depends on the architecture and installed backend. The built-in
+HTTP server loads a model-folder predictor; the Anthropic proxy forwards to
+an external runtime. ONNX and vLLM consume compatible exports. A direct
+external runtime does not automatically apply MaatML validators.
 
 Serving and target compilation are pluggable: `maatml serve --server NAME` and
 `maatml compile --target NAME` dispatch through the `server` / `compiler`
 registries. The built-in `http` server stays the default for development; native
-backends (DeepStream/TensorRT, vLLM, llama.cpp, …) register as plugins and keep
-their hot path in the native engine.
+backends can register as plugins and keep their hot path in the native engine.
+`http` and `anthropic` are bundled servers. The `sip_tensorrt` compiler and
+`sip_deepstream` server below are illustrative external plugin names; install
+and register those plugins before using them. `maatml plugins` lists available
+registrations.
 
 ## 0. Target compilation
 
@@ -182,7 +186,7 @@ directly** for OpenAI-compatible, higher-throughput serving:
 vllm serve examples/vision-vlm/output/export/<run_id>
 ```
 
-The [`vision-vlm` example](https://github.com/moralfish/maatml/tree/main/examples/vision-vlm)
+The [`vision-vlm` example](https://github.com/Moralfish-Labs/maatml/tree/main/examples/vision-vlm)
 ships `serve_vllm.sh` (Linux / Jetson container) and an OpenAI-compatible client.
 Its evaluator can even score against a live vLLM endpoint, set
 `MAATML_VLLM_ENDPOINT` and the predictor switches to the chat-completions API
@@ -193,6 +197,19 @@ pip install "maatml[vllm]"     # Linux-only
 export MAATML_VLLM_ENDPOINT=http://127.0.0.1:8000
 maatml evaluate examples/vision-vlm --gate
 ```
+
+## Adding files to an export
+
+If an external tool writes an additional artifact inside the export directory,
+register its checksum before verifying the bundle:
+
+```bash
+maatml manifest amend /path/to/export /path/to/export/model-q5.gguf --format gguf
+maatml verify /path/to/export
+```
+
+Amendment preserves existing gate evidence. It does not evaluate or certify the
+added artifact; evaluate the deployed representation separately.
 
 ## Verifying an export
 

@@ -1,4 +1,4 @@
-"""MaatML, machine learning models framework from experimentation to production."""
+"""MaatML: where a small task-specific model is built, weighed, and packaged."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version

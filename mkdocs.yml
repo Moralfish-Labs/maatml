@@ -1,11 +1,20 @@
 site_name: MaatML
 site_description: Experimentation → production for small text, vision, and vision-language models
 site_url: https://maatml.pages.dev/
-repo_url: https://github.com/moralfish/maatml
-repo_name: moralfish/maatml
-# Internal maintainer checklist, kept in-repo but not published to the site.
-exclude_docs: |
-  GO_PUBLIC.md
+repo_url: https://github.com/Moralfish-Labs/maatml
+repo_name: Moralfish-Labs/maatml
+edit_uri: edit/main/docs/
+strict: true
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    anchors: warn
+plugins:
+  - search
 theme:
   name: material
   icon:
@@ -41,8 +50,18 @@ nav:
   - The validator-gated lifecycle: lifecycle.md
   - The data flywheel: flywheel.md
   - Evidence: evidence.md
+  - Orchestration & recovery: orchestration.md
+  - Rollouts: rollouts.md
   - Serving & deployment: serving.md
   - Plugin author guide: plugins.md
+  - Reference:
+      - CLI commands: cli.md
+      - model.yml: skill/references/model-yml.md
+      - Plugin contracts: skill/references/plugins.md
+      - Data collection: skill/references/flywheel.md
+      - Agent skill: skill/SKILL.md
+  - Troubleshooting: troubleshooting.md
+  - Contributing: contributing.md
   - Examples:
       - examples/index.md
       - Support Ticket Triage: examples/support-ticket-triage.md
