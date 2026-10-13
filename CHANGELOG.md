@@ -867,7 +867,7 @@ plugin security floor, and config honesty.
 - **Renamed the project from flow-ml to MaatML.** Package / CLI / entry-point
   group are now `maatml` / `maatml` / `maatml.plugins`. Resolves the name
   collision with [MLflow](https://mlflow.org/). GitHub repo:
-  [moralfish/maatml](https://github.com/moralfish/maatml).
+  [Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maatml).
 - **Examples-first restructure:** `jcl-validator` and `spool-interpreter` live
   under `examples/` with folder-local plugins (`jcl_plugin` / `spool_plugin`).
   Core owns architectures (`causal_sft`, `seq2seq`, `multi_head_classifier`);

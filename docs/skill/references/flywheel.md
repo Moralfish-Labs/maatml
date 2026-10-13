@@ -1,10 +1,10 @@
 # The data flywheel: growing a corpus that stays gated
 
-Training data is the scarce input, and a validator-gated model turns its own
-contract into a way to make more of it. Every operation here is **explicit** and
-every row it produces is gated by the same `evaluation.validator` that grades
-the model — so a row that enters the corpus is a row the model is measured
-against.
+Each source operation changes the corpus explicitly. Configure
+`evaluation.validator` to check labels against the same contract used in
+evaluation and serving. `datagen` fails closed unless `--allow-ungated` is set;
+`ingest` validates only when a validator is configured. `mint` deliberately
+retains a failing completion as the rejected half of each preference pair.
 
 None of these are steps of `maatml run`. They change the seed corpus, which is
 exactly what makes `prepare` stale on the next run:
@@ -24,7 +24,7 @@ maatml run          # prepare is stale, so the loop retrains
 - [ingest: import external rows](#ingest-import-external-rows)
 - [mint: preference pairs](#mint-preference-pairs)
 - [Reviewed capture](#reviewed-capture)
-- [Making a teacher earn its keep](#making-a-teacher-earn-its-keep)
+- [Diagnosing teacher rejections](#diagnosing-teacher-rejections)
 
 ## Choosing an operation
 
@@ -74,7 +74,8 @@ held-out manifests are not prompt sources.
 
 The teacher is any OpenAI-compatible endpoint, named by
 `MAATML_TEACHER_BASE_URL` and `MAATML_TEACHER_API_KEY` — so serving one locally
-is a base URL, not a code path. Keep the key in `.env`, never committed.
+is a base URL, not a code path. Export credentials in the process environment; MaatML does not automatically
+load a `.env` file. Do not commit credentials.
 
 Configure it in `model.yml` under `distill:` rather than on the command line, so
 the run record can say what labelled the corpus. See `model-yml.md`, especially
@@ -125,29 +126,17 @@ Capture requires the auth token (an open capture endpoint is an unbounded write
 sink and a way to poison the corpus), the file is size-capped, and `ingest`
 refuses any row still marked unapproved.
 
-## Making a teacher earn its keep
+## Diagnosing teacher rejections
 
-Teacher configuration is not a detail — it is often the difference between a
-corpus and a pile of rejects. Measured on one 80-prompt pool:
+Before changing the teacher or increasing its token budget, inspect the
+rejection report and cached responses:
 
-| change | accepted |
-|---|---|
-| `max_tokens: 4096`, thinking flag set | 11 / 80 |
-| `max_tokens: 12288` | 27 / 80 |
-| `reasoning_effort: none`, one worked example in the brief | 56 / 80 |
-
-Three things to take from that:
-
-- **A thinking teacher can spend its whole budget thinking.** One prompt used
-  10,706 of 12,135 completion tokens on hidden reasoning with the "disable"
-  flag set. `reasoning_effort: none` zeroed it and cut that prompt from 117s to
-  4s. Check where the tokens went before raising the budget.
-- **Budget failures look like refusals.** Answers that are simply cut off arrive
-  as unparseable or empty, and read as a teacher that cannot do the task.
-- **The briefing is part of the contract surface.** A flat rendering of the tool
-  signature produced flat arguments on 21 of 80 replies; one *worked call* in
-  the brief roughly doubled acceptance. Show the shape you want, do not describe
-  it.
-
-If acceptance is low, read the rejection report before changing the model. The
-pattern in the rejects usually names the fix.
+- Empty or truncated replies can indicate that reasoning consumed the output
+  budget. Check the endpoint's returned usage and supported generation options.
+- Valid JSON with the wrong argument shape points to a contract or prompt
+  mismatch. Include a worked example that the task validator accepts.
+- Repeated request errors point to endpoint configuration or availability;
+  increasing the corpus target does not resolve them.
+- Acceptance rates depend on the task, prompt pool, teacher revision and
+  validator. Record those inputs with the distillation report before comparing
+  runs.

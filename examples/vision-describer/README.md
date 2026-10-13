@@ -1,7 +1,7 @@
 # Vision Result Describer
 
 Small **flan-t5-small** seq2seq model that reads a structured
-[`examples/vision`](https://github.com/moralfish/maatml/tree/main/examples/vision) multitask response and emits one short
+[`examples/vision`](https://github.com/Moralfish-Labs/maatml/tree/main/examples/vision) multitask response and emits one short
 factual description:
 
 ```json
@@ -39,8 +39,11 @@ examples/vision-describer/
 
 ## Lifecycle
 
+Run these commands from the repository root in an activated virtual
+environment. The editable install matches the example to this source revision.
+
 ```bash
-pip install -e ".[dev,ml]"
+pip install -e ".[ml]"
 
 # Optional: regenerate / grow the corpus
 python examples/vision-describer/scripts/build_seeds.py --target 400
@@ -99,6 +102,7 @@ result with the same function used for training seeds, POSTs
 | `scene_grounding_rate` | >= 0.95 | caption names the scene from the vision JSON |
 | `schema_conformance_rate` | >= 0.95 | matches `datasets/schema.json` |
 
+These are configured example floors, not a fresh measurement.
 Eval gates cover the describer alone (pre-baked linearized JSON). End-to-end
 vision→text quality is exercised via `compose_client.py` after both models
 are trained.

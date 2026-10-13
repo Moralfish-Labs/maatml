@@ -30,8 +30,10 @@ else. Registration happens in a folder-local package named in `model.yml`
 | exporter | `@register_exporter` | `maatml export --format ...` |
 | compiler | `@register_compiler` | `maatml compile --target ...` |
 | server | `@register_server` | `maatml serve --server ...` |
+| environment (unreleased) | `@register_environment` | Rollout state transitions and verification |
+| scaffold hook | `@register_scaffold_hook` | Defaults for a plugin-owned architecture |
 
-`maatml plugins` lists what is registered; `maatml audit <dir>` says whether
+`maatml plugins` lists built-ins and discoverable installed plugins; `maatml audit <dir>` says whether
 what `model.yml` names is actually there.
 
 ## Writing a validator
@@ -130,7 +132,8 @@ measures. maatml adds `output_nonempty_rate` alongside whatever you return.
 Two reserved keys are lifted out of `metrics` before the report is written.
 `__counts__` is the evidence behind each rate — `{"my_family_pass_rate":
 {"k": passed, "n": len(graded)}}` — and is what `maatml gates derive` floors
-on; a rate without counts cannot be floored. `__pathologies__` is a list of
+on. Without counts, an existing gate uses the observed value and labels it
+`observed`; it has no derived uncertainty bound. `__pathologies__` is a list of
 names or `{name, evidence}` dicts for output shapes no floor should have to
 catch (a detector that never fires, one class for everything); they join the
 harness's own `never_fires` / `identical_output` / `one_class` and fail the
@@ -201,9 +204,17 @@ from maatml.registry import register_generator
 
 
 @register_generator("my_task")
-def generate(n, **kwargs):
-    for i in range(n):
-        yield {"request": ..., "expected": ...}
+def my_generator(model_def, *, seed=0, **kwargs):
+    counter = 0
+
+    def generate_one():
+        nonlocal counter
+        counter += 1
+        # Replace with task-specific generation; match dataset field names.
+        return {"sample_id": f"sample-{seed}-{counter}",
+                "request": "Example question", "expected": {"answer": "Example"}}
+
+    return generate_one
 ```
 
 `datagen` fails closed when no validator is configured, unless you pass
@@ -217,9 +228,10 @@ from maatml.registry import register_exporter
 
 
 @register_exporter("my_fmt")
-def export_my_fmt(checkpoint_dir, out_dir, model_def, **kwargs):
-    """Write artifacts into out_dir; return the paths written."""
-    return [out_dir / "model.myfmt"]
+def export_my_fmt(model_def, checkpoint_dir, out_dir, *, run_id=None):
+    """Write artifacts and manifest.json into out_dir; return that directory."""
+    ...  # conversion and manifest creation are the exporter's responsibility
+    return out_dir
 ```
 
 Everything written must end up in `manifest.json` so `maatml verify` can check

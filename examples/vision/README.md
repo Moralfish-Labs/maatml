@@ -6,7 +6,9 @@ One MobileNetV3-Large checkpoint that jointly predicts:
 - **object detection** (colored shapes, CenterNet-style, NMS-free ONNX)
 - **pose** estimation (single stick figure, 12 keypoints)
 
-Trained on deterministic synthetic scenes (PIL), fully offline, no Hub downloads.
+Scene generation is deterministic and offline. Full training uses a pretrained
+MobileNet backbone and may download its weights on first use; the smoke
+configuration disables pretrained weights.
 Deploy with `maatml export --format onnx` and `maatml serve`.
 
 ## Output shape
@@ -40,11 +42,14 @@ examples/vision/
 
 ## Lifecycle
 
+Run these commands from the repository root in an activated virtual
+environment. The editable install matches the example to this source revision.
+
 ```bash
 # Install (once)
-pip install -e ".[dev,ml,vision]"
+pip install -e ".[ml,vision]"
 
-# Optional: grow the corpus (starter 16-row set is committed)
+# Generate the images and matching rows before preparing (images are not tracked)
 python examples/vision/scripts/build_seeds.py --target 2000
 # or: maatml datagen examples/vision --target 500
 
@@ -99,7 +104,9 @@ subset via ingest rather than streaming 20 GB in core.
 | `pck_0_2` | >= 0.33 | pose PCK @ 0.2 x person diagonal |
 | `scene_accuracy` | >= 0.97 | background-style classification |
 
-Raise the gates after a longer train on a larger corpus (`--target 2000`).
+The table reflects the configured example gates, not a fresh measurement.
+After changing the corpus, evaluate an explicit run and derive supported
+floors with `maatml gates derive`; retain the report and population hash.
 
 ## Validator (`vision_scene`)
 

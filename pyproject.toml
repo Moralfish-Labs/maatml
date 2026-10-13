@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "maatml"
 version = "0.13.0"
-description = "A machine learning models framework from experimentation to production: data, training, evaluation, export, and deploy pipelines for small task-specific language models"
+description = "Where a small task-specific model is built, weighed, and packaged: one validator-gated lifecycle from data to export for text, vision, and vision-language models"
 readme = "README.md"
 keywords = [
   "fine-tuning", "llm", "vlm", "lora", "qlora", "peft",
@@ -18,7 +18,7 @@ license = { text = "Apache-2.0" }
 authors = [
   { name = "Nedal Elghamry" }
 ]
-urls = { Homepage = "https://maatml.pages.dev", Documentation = "https://maatml.pages.dev", Repository = "https://github.com/moralfish/maatml", Changelog = "https://github.com/moralfish/maatml/blob/main/CHANGELOG.md" }
+urls = { Homepage = "https://maatml.pages.dev", Documentation = "https://maatml.pages.dev", Repository = "https://github.com/Moralfish-Labs/maatml", Changelog = "https://github.com/Moralfish-Labs/maatml/blob/main/CHANGELOG.md" }
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: Apache Software License",

@@ -35,9 +35,10 @@ The denominators come from the report's `counts` (`{metric: {k, n}}`), which
 the harness records for every rate it computes and a metrics plugin adds for
 its own through `__counts__`. A metric below `--min-n` rows is refused rather
 than floored on thin evidence. When the run carries a prediction cache
-(`evaluate --cache`), the floor is instead a cluster bootstrap over the group
-key (`--cluster-by`, default `family`), because rows from one scenario or one
-camera are not independent trials and the row-level bound is optimistic.
+(`evaluate --cache`), supported per-row rates use a cluster bootstrap over the
+group key (`--cluster-by`, default `family`). Plugin rates need a per-row
+verdict to use that path. Without counts, an existing metric gate falls back
+to its observed value, labelled `observed`; that is not a confidence bound.
 
 `--write` stamps `evaluation.gates_benchmark` with the split's content hash.
 A later `evaluate --gate` on a different split warns (`population_mismatch`
@@ -74,7 +75,7 @@ maatml operating-point derive <model-dir> --run RUN --write --confirm-on-test
 ```yaml
 evaluation:
   operating_point:
-    threshold_key: score_threshold    # the evaluation key the sweep writes
+    threshold_key: score_thresh    # the evaluation key the sweep writes
     objective: recall
     budget: {metric: false_alarms_per_hour, max: 2.0}
 ```
@@ -192,4 +193,4 @@ seed statistics and spends, from `runs.jsonl`, `output/eval/*.json` and
 reads `model.yml`.
 
 The configuration surface for all of this is in the skill reference,
-[`docs/skill/references/model-yml.md`](https://github.com/moralfish/maatml/blob/main/docs/skill/references/model-yml.md).
+[model.yml reference](skill/references/model-yml.md).

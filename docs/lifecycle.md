@@ -20,11 +20,12 @@ together, and it is the main thing general fine-tuning tools leave to you.
         ingest            --gate         /predict
 ```
 
-- **Data:** `maatml datagen` / `maatml ingest` keep only rows whose output
-  passes the validator (`build_gated_corpus`). Bad synthetic data never reaches
-  training.
-- **Evaluation:** `maatml evaluate` scores predictions and enforces
-  `evaluation.gates`; `--gate` exits non-zero on failure, so it drops straight
+- **Data:** `datagen` and `distill` validate accepted targets; `ingest` validates
+  when `evaluation.validator` is configured. `datagen --allow-ungated` explicitly
+  bypasses that requirement. A validator checks its declared contract; it does
+  not establish that every accepted label is factually correct.
+- **Evaluation:** `maatml evaluate` scores predictions and reports
+  `evaluation.gates`; adding `--gate` exits non-zero on failure, so it drops straight
   into CI.
 - **Serving:** `maatml serve` re-runs the *same* validator inline when a
   request hits `/predict?validate=1`. It annotates each response with the
@@ -79,9 +80,11 @@ plugins: [./my_plugin]
 evaluation:
   validator: my_task
   metrics: my_task
-  gates:
-    accuracy: 0.9
 ```
+
+The `my_task` metrics registration is separate from the validator; implement it
+as shown in the [plugin contracts](skill/references/plugins.md#metrics), then
+derive gates from a measured report.
 
 ## Even free text can be gated
 
@@ -96,7 +99,7 @@ what "correct enough to ship" means; only the checks change.
 ```bash
 maatml prepare   <model-dir>   # build train/val/test splits
 maatml train     <model-dir>   # fine-tune (LoRA/QLoRA/full/DPO/ORPO/vision/VLM)
-maatml evaluate  <model-dir>   # validator + metrics + gates
+maatml evaluate  <model-dir> --gate   # score and enforce gates
 maatml export    <model-dir>   # safetensors/gguf/mlx/onnx + manifest.json
 maatml verify    <export-dir>  # sha256 check vs manifest
 maatml serve     <model-dir>   # JSON inference API (validator inline)
@@ -108,6 +111,10 @@ floors, the ship verdict, the operating point, named populations, the run
 record that travels. Those are lifecycle steps too; see [Evidence](evidence.md).
 
 ## One command for the whole lifecycle
+
+An external orchestrator can invoke this command or individual stages on a
+remote worker. Provisioning, transfers and recovery policy remain outside
+maatml; see [orchestration and recovery](orchestration.md).
 
 ```bash
 maatml run <model-dir>            # prepare -> train -> evaluate -> export -> verify
@@ -148,7 +155,8 @@ before any step runs and leaves `output/pipeline.json` untouched).
 
 A `--smoke` rehearsal cannot meet production thresholds, and holding it to them
 would only teach people to ignore a red gate. A `smoke:` block may declare its
-own `gates:`, which `--smoke` runs enforce instead. The pass is recorded as
+own `gates:`, which `--smoke` runs enforce instead. Without that block,
+evaluation falls back to the production gates. The pass is recorded as
 smoke-gated in the run record and in the export manifest's `gate_evidence`, so
 a rehearsal never reads as a production gate pass later.
 
@@ -161,6 +169,24 @@ Every evaluate also reports **pathologies** (`never_fires`, `identical_output`,
 rehearsal floor loose enough for a broken model cannot be cleared by one.
 
 `maatml plan <model-dir>` is the same view as `run --dry-run`.
+
+## Tool-call chat training (unreleased)
+
+Causal SFT rows can carry `messages`, per-row `tools`, and
+`chat_template_kwargs`. Assistant messages preserve `tool_calls`; tool-result
+messages preserve their role, name and call ID. The template receives the same
+tool definitions during training and prediction.
+
+Every assistant turn is supervised, including tool calls. System messages,
+user messages, tool results and the tool-definition preamble are masked from
+the loss. The trainer locates assistant spans in the complete rendered chat
+and checks their token decoding, including templates that render intermediate
+assistant turns differently from the final turn. If a tool row cannot be
+matched exactly, training rejects it rather than accepting shifted labels.
+
+`scripts/check_chat_masks.py --help` describes the offline masking check using
+a cached tokenizer. This feature is in source after 0.13.0; do not assume an
+installed 0.13.0 wheel supports it.
 
 ## What each stage refuses to do quietly
 
