@@ -13,13 +13,31 @@ import json
 import warnings
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from rich.console import Console
 
 from ..config import ModelDefinition, get_dataset_cfg
 from ..registry import SANITIZERS, register_format
+from ..utils.chat import validate_chat_row
 from ..utils.io import iter_jsonl, stable_hash, write_jsonl
+from .attribution import (
+    AttributionError,
+    check_sources,
+    read_attribution,
+    resolve_attribution,
+    resolve_attribution_field,
+    write_corpus_lock,
+)
+from .populations import (
+    apply_pins,
+    benchmark_version,
+    check_isolation,
+    refuse_in_place_benchmark_change,
+    resolve_isolation,
+    resolve_pins,
+    write_benchmark_state,
+)
 from .schemas import Split
 
 console = Console()
@@ -308,6 +326,25 @@ def _check_benchmark_leakage(
         )
 
 
+def _check_chat_rows(populations: dict[str, Optional[list[dict]]]) -> None:
+    """Refuse rows whose tool-call fields are malformed.
+
+    ``tools``, assistant ``tool_calls``, ``tool`` turns, ``chat_template_kwargs``
+    and the ``family`` / ``surface`` / ``category`` / ``scenario`` tags are
+    accepted; only their structure is checked, so plain rows are untouched.
+    """
+    problems: list[str] = []
+    for label, rows in populations.items():
+        for n, row in enumerate(rows or []):
+            for problem in validate_chat_row(row):
+                problems.append(f"{label} row {row.get('sample_id') or n}: {problem}")
+    if problems:
+        more = f"\n  ... and {len(problems) - 10} more" if len(problems) > 10 else ""
+        raise ValueError(
+            "malformed chat rows; refusing to write splits:\n  " + "\n  ".join(problems[:10]) + more
+        )
+
+
 def prepare_rows(
     model_def: ModelDefinition,
     seed_rows: list[dict],
@@ -317,16 +354,35 @@ def prepare_rows(
     benchmark_rows: Optional[list[dict]] = None,
     benchmark_label: Optional[str] = None,
     sanitize_applied: Optional[list[str]] = None,
+    blind_rows: Optional[list[dict]] = None,
+    input_files: Optional[Sequence[Path]] = None,
+    train_rows: Optional[list[dict]] = None,
 ) -> dict:
     """Split already-loaded rows and write train/val/test + dataset card.
+
+    ``train_rows`` join train after the hash split and never reach val or the
+    benchmark: rows collected from a policy's own rollouts, whose distribution
+    must not move the numbers earlier runs were measured on. A train-only row
+    whose group the split sent to val or test is refused.
+
+    ``dataset.pins`` move whole groups into val or the benchmark after the
+    hash split; ``dataset.isolation`` is then asserted over every population,
+    including ``blind_rows``, which are checked but never written.
 
     Shared by ``jsonl_seed`` and format adapters (alpaca / sharegpt).
 
     ``sanitize_applied`` is the list of sanitizer tags actually run on the rows
     (the card reports these, not the declared config, so it never claims a
     sanitizer ran when it did not).
+
+    With ``dataset.attribution`` declared every row's ``source`` must hold a
+    signed entry; the corpus lock records ``input_files`` (the seed,
+    benchmark and blind files as they were read) by sha256.
     """
     cfg = get_dataset_cfg(model_def)
+    _check_chat_rows(
+        {"seed": seed_rows, "benchmark": benchmark_rows, "blind": blind_rows, "train": train_rows}
+    )
     out = Path(out_dir) if out_dir else model_def.prepared_dir
     out.mkdir(parents=True, exist_ok=True)
     ratios = _resolve_ratios(cfg)
@@ -337,6 +393,36 @@ def prepare_rows(
     by_split, group_assignment, degenerate_key = _assign_group_splits(
         seed_rows, ratios, group_by=group_by
     )
+    isolation = resolve_isolation(cfg)
+    pins = resolve_pins(cfg, isolation)
+    pinned: dict[str, int] = {}
+    if pins:
+        as_str = {split.value: rows for split, rows in by_split.items()}
+        pinned = apply_pins(as_str, pins)
+        # A pinned population is exactly its pins: whatever the hash split
+        # dealt it from unpinned groups would share a camera or site with
+        # training, so those rows return to train.
+        pinned_populations = {"test" if p.population == "benchmark" else p.population for p in pins}
+        for name in pinned_populations:
+            keep: list[dict] = []
+            for row in as_str.get(name, []):
+                if any(
+                    p.matches(row)
+                    for p in pins
+                    if (p.population if p.population != "benchmark" else "test") == name
+                ):
+                    keep.append(row)
+                else:
+                    back = dict(row)
+                    back["split"] = Split.train.value
+                    as_str[Split.train.value].append(back)
+            as_str[name] = keep
+        by_split = {split: as_str.get(split.value, []) for split in by_split}
+        # A pinned group has a declared home; the hash assignment no longer
+        # describes it, and the benchmark guard must see where it went.
+        for split, rows in by_split.items():
+            for row in rows:
+                group_assignment[_group_key(row, group_by=group_by)] = split
     category_counts: Counter[str] = Counter()
     source_counts: Counter[str] = Counter()
     family_counts: Counter[str] = Counter()
@@ -364,11 +450,98 @@ def prepare_rows(
             if tagged.get("family"):
                 family_counts[str(tagged["family"])] += 1
 
+    if train_rows:
+        leaked = sorted(
+            {
+                key
+                for key in (_group_key(row, group_by=group_by) for row in train_rows)
+                if group_assignment.get(key) in (Split.val, Split.test)
+            }
+        )
+        if leaked:
+            raise ValueError(
+                f"{len(leaked)} train-only group(s) are already in val or test, "
+                f"e.g. {leaked[:3]}; refusing to train on a held-out group"
+            )
+        for row in train_rows:
+            tagged = dict(row)
+            tagged["split"] = Split.train.value
+            by_split[Split.train].append(tagged)
+            category_counts[str(tagged.get("category") or "unknown")] += 1
+            source_counts[str(tagged.get("source") or "unknown")] += 1
+            if tagged.get("family"):
+                family_counts[str(tagged["family"])] += 1
+
+    if isolation is not None:
+        populations = {
+            "train": by_split[Split.train],
+            "val": by_split[Split.val],
+            "benchmark": by_split[Split.test],
+            "blind": list(blind_rows or []),
+        }
+        problems = check_isolation(populations, isolation)
+        if problems:
+            raise ValueError(
+                "dataset.isolation violated; refusing to write splits:\n  "
+                + "\n  ".join(problems)
+                + "\nPin whole groups at the policy level (dataset.pins) or set "
+                "dataset.group_by to that level so the hash split cannot straddle it."
+            )
+    if blind_rows:
+        _check_benchmark_leakage(
+            blind_rows,
+            group_assignment,
+            group_by=group_by,
+            seed_rows=seed_rows + (benchmark_rows or []),
+            request_field=str(cfg.get("request_field") or cfg.get("raw_field") or "") or None,
+        )
+
+    attribution_path = resolve_attribution(model_def)
+    attribution_field = resolve_attribution_field(model_def)
+    source_check = None
+    if attribution_path is not None:
+        entries = read_attribution(attribution_path)
+        every_row = [row for rows in by_split.values() for row in rows] + list(blind_rows or [])
+        source_check = check_sources(every_row, entries, field=attribution_field)
+        if not source_check.ok:
+            raise AttributionError(
+                f"{attribution_path.name} refuses to prepare:\n  "
+                + "\n  ".join(source_check.refusals)
+            )
+
     # After benchmark pinning: test may be non-empty only because of it.
     _warn_on_empty_splits(by_split, n_groups=len(group_assignment))
 
+    version = benchmark_version(by_split[Split.test], pins)
+    write_benchmark_state(
+        out,
+        version=version,
+        n=len(by_split[Split.test]),
+        benchmark_path=Path(benchmark_label) if benchmark_label else None,
+        pins=pins,
+        isolation=isolation,
+    )
+
     paths = {split.value: str(_write_split(rows, out, split)) for split, rows in by_split.items()}
     split_counts = {split.value: len(rows) for split, rows in by_split.items()}
+    lock_files = (
+        list(input_files)
+        if input_files is not None
+        else [
+            Path(label)
+            for label in (seed_label, benchmark_label)
+            if label and Path(label).is_file()
+        ]
+    )
+    lock = write_corpus_lock(
+        out,
+        files=lock_files,
+        attribution_path=attribution_path,
+        check=source_check,
+        field=attribution_field,
+    )
+    lock_sha = json.loads(lock.read_text(encoding="utf-8"))["lock_sha256"]
+    accepted_risk = dict(source_check.accepted_risk) if source_check else {}
     card = _write_dataset_card(
         out,
         title=f"{model_def.identity} dataset",
@@ -382,6 +555,15 @@ def prepare_rows(
             f"Families: {dict(family_counts) if family_counts else '{}'}",
             f"Sanitize: {list(sanitize_applied) if sanitize_applied else 'none'}",
             f"Degenerate group split per row: {degenerate_key or 'none'}",
+            f"Benchmark version: {version}",
+            f"Pins: {pinned if pinned else 'none'}",
+            f"Isolation: {isolation.policy if isolation else 'none'}",
+            f"Blind rows (checked, not written): {len(blind_rows or [])}",
+            f"Train-only rows: {len(train_rows or [])}",
+            f"Attribution: {attribution_path or 'none'}"
+            + (f" (keyed on `{attribution_field}`)" if attribution_path else ""),
+            f"Accepted risk: {accepted_risk if accepted_risk else 'none'}",
+            f"Corpus lock: {lock_sha}",
         ],
     )
 
@@ -394,6 +576,11 @@ def prepare_rows(
         "family_counts": dict(family_counts),
         "split_counts": split_counts,
         "degenerate_group": degenerate_key,
+        "benchmark_version": version,
+        "pins": pinned,
+        "blind_rows": len(blind_rows or []),
+        "corpus_lock": lock_sha,
+        "accepted_risk": accepted_risk,
     }
     console.print(
         f"[green]prepare complete[/] ({model_def.identity}): {summary['split_counts']} "
@@ -428,8 +615,21 @@ def prepare(model_def: ModelDefinition, out_dir: Optional[Path] = None) -> dict:
     if benchmark_path:
         bench = model_def.resolve(benchmark_path)
         bench_label = str(bench)
+        refuse_in_place_benchmark_change(
+            Path(out_dir) if out_dir else model_def.prepared_dir, bench
+        )
         for raw in iter_jsonl(bench):
             bench_rows.append(_apply_sanitize(raw, sanitize_tags, request_field))
+
+    blind_rows: list[dict] = []
+    blind_path = cfg.get("blind_samples")
+    input_files = [seed_path]
+    if benchmark_path:
+        input_files.append(model_def.resolve(benchmark_path))
+    if blind_path:
+        input_files.append(model_def.resolve(blind_path))
+        for raw in iter_jsonl(model_def.resolve(blind_path)):
+            blind_rows.append(_apply_sanitize(raw, sanitize_tags, request_field))
 
     return prepare_rows(
         model_def,
@@ -439,4 +639,6 @@ def prepare(model_def: ModelDefinition, out_dir: Optional[Path] = None) -> dict:
         benchmark_rows=bench_rows or None,
         benchmark_label=bench_label,
         sanitize_applied=sanitize_tags,
+        blind_rows=blind_rows or None,
+        input_files=input_files,
     )

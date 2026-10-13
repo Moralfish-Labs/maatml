@@ -76,6 +76,7 @@ def test_help_lists_every_command() -> None:
         "validate",
         "plan",
         "plugins",
+        "audit",
     ):
         assert command in result.output
 
@@ -175,6 +176,44 @@ def test_verify_fails_on_a_tampered_file(tmp_path: Path) -> None:
     result = runner.invoke(app, ["verify", str(export)])
     assert result.exit_code == 1
     assert "verify failed" in result.output
+
+
+def test_compile_require_gated_refuses_an_ungated_export(tmp_path: Path) -> None:
+    from maatml.registry import register_compiler
+    from maatml.utils.io import write_json
+
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "model.onnx").write_bytes(b"onnx")
+    write_json(
+        export / "manifest.json",
+        {
+            "name": "toy",
+            "version": "1",
+            "identity": "toy@1",
+            "files": [{"path": "model.onnx", "sha256": "abc"}],
+        },
+    )
+
+    @register_compiler("cli_gated")
+    def _cmp(export_dir, out_dir, *, manifest, options):
+        del export_dir, manifest, options
+        return out_dir
+
+    result = runner.invoke(
+        app,
+        [
+            "compile",
+            str(export),
+            "--target",
+            "cli_gated",
+            "--out",
+            str(tmp_path / "out"),
+            "--require-gated",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "require-gated" in plain(result.output)
 
 
 def test_verify_fails_when_a_listed_file_is_missing(tmp_path: Path) -> None:
@@ -322,11 +361,11 @@ def test_main_prints_one_line_for_user_errors(monkeypatch, capsys, debug: bool) 
     assert "--debug" in out
 
 
-# --- doctor ----------------------------------------------------------------
+# --- audit -----------------------------------------------------------------
 
 
-def test_doctor_reports_environment_and_plugins() -> None:
-    result = runner.invoke(app, ["doctor"])
+def test_audit_reports_environment_and_plugins() -> None:
+    result = runner.invoke(app, ["audit"])
     assert result.exit_code == 0, result.output
     for section in ("environment", "packages", "device", "plugins"):
         assert section in result.output
@@ -334,8 +373,8 @@ def test_doctor_reports_environment_and_plugins() -> None:
     assert "maatml" in result.output
 
 
-def test_doctor_json_is_machine_readable() -> None:
-    result = runner.invoke(app, ["doctor", "--json"])
+def test_audit_json_is_machine_readable() -> None:
+    result = runner.invoke(app, ["audit", "--json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert {"environment", "packages", "device", "plugins"} <= set(payload)
@@ -346,10 +385,10 @@ def test_doctor_json_is_machine_readable() -> None:
     )
 
 
-def test_doctor_flags_a_model_folder_with_missing_paths(tmp_path: Path) -> None:
-    mdir = _write_model(tmp_path, name="doctor-broken")
+def test_audit_flags_a_model_folder_with_missing_paths(tmp_path: Path) -> None:
+    mdir = _write_model(tmp_path, name="audit-broken")
     (mdir / "datasets" / "seeds.jsonl").unlink()
-    result = runner.invoke(app, ["doctor", str(mdir), "--json"])
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
     assert result.exit_code == 1
     payload = json.loads(result.output)
     model = {check["name"]: check for check in payload["model"]}
@@ -358,12 +397,102 @@ def test_doctor_flags_a_model_folder_with_missing_paths(tmp_path: Path) -> None:
     assert model["prepared splits"]["status"] == "warn"
 
 
-def test_doctor_on_a_healthy_example_exits_zero() -> None:
-    result = runner.invoke(app, ["doctor", "examples/support-ticket-triage", "--json"])
+def test_audit_on_a_healthy_example_exits_zero() -> None:
+    result = runner.invoke(app, ["audit", "examples/support-ticket-triage", "--json"])
     assert result.exit_code == 0, result.output
     model = {c["name"]: c for c in json.loads(result.output)["model"]}
     assert model["architecture"]["status"] == "ok"
     assert model["evaluation.gates"]["status"] == "ok"
+
+
+def test_audit_flags_unregistered_metrics(tmp_path: Path) -> None:
+    mdir = _write_model(
+        tmp_path,
+        name="audit-bad-metrics",
+        evaluation="evaluation:\n  metrics: not_a_real_metric\n  gates:\n    x: 0.5\n",
+    )
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
+    assert result.exit_code == 1
+    model = {c["name"]: c for c in json.loads(result.output)["model"]}
+    assert model["evaluation.metrics"]["status"] == "error"
+    assert "not_a_real_metric" in model["evaluation.metrics"]["detail"]
+
+
+def test_audit_flags_unregistered_generator(tmp_path: Path) -> None:
+    mdir = _write_model(
+        tmp_path,
+        name="audit-bad-gen",
+        extra="  generator: no_such_generator\n",
+    )
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
+    assert result.exit_code == 1
+    model = {c["name"]: c for c in json.loads(result.output)["model"]}
+    assert model["dataset.generator"]["status"] == "error"
+
+
+def test_audit_warns_on_runs_quarantine(tmp_path: Path) -> None:
+    mdir = _write_model(tmp_path, name="audit-corrupt")
+    corrupt = mdir / "output" / "runs.jsonl.corrupt"
+    corrupt.parent.mkdir(parents=True, exist_ok=True)
+    corrupt.write_text("{not json\n{also bad\n", encoding="utf-8")
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
+    assert result.exit_code == 0, result.output
+    model = {c["name"]: c for c in json.loads(result.output)["model"]}
+    assert model["runs quarantine"]["status"] == "warn"
+    assert "2" in model["runs quarantine"]["detail"]
+
+
+def test_audit_warns_when_gate_key_missing_from_eval_report(tmp_path: Path) -> None:
+    mdir = _write_model(
+        tmp_path,
+        name="audit-gate-mismatch",
+        evaluation=(
+            "evaluation:\n  gates:\n    all_layers_pass_rate: 0.9\n    made_up_metric: 0.5\n"
+        ),
+    )
+    eval_dir = mdir / "output" / "eval"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "run1.json").write_text(
+        json.dumps(
+            {
+                "model_id": "x",
+                "n": 1,
+                "metrics": {"all_layers_pass_rate": 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
+    assert result.exit_code == 0, result.output
+    model = {c["name"]: c for c in json.loads(result.output)["model"]}
+    assert model["gate keys"]["status"] == "warn"
+    assert "made_up_metric" in model["gate keys"]["detail"]
+
+
+def test_audit_warns_on_empty_seed_corpus(tmp_path: Path) -> None:
+    mdir = _write_model(tmp_path, name="audit-empty-seeds")
+    # _write_model already writes an empty seeds.jsonl
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
+    assert result.exit_code == 0, result.output
+    model = {c["name"]: c for c in json.loads(result.output)["model"]}
+    assert model["seed corpus"]["status"] == "warn"
+    assert "0 rows" in model["seed corpus"]["detail"]
+
+
+def test_audit_flags_qlora_on_non_cuda_when_torch_present(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    if torch.cuda.is_available():
+        pytest.skip("auto device is cuda; cannot exercise the non-CUDA QLoRA error")
+    mdir = _write_model(
+        tmp_path,
+        name="audit-qlora",
+        extra=("training:\n  quantization:\n    load_in_4bit: true\n"),
+    )
+    result = runner.invoke(app, ["audit", str(mdir), "--json"])
+    assert result.exit_code == 1
+    model = {c["name"]: c for c in json.loads(result.output)["model"]}
+    assert model["training.quantization"]["status"] == "error"
+    assert "CUDA" in model["training.quantization"]["detail"]
 
 
 # --- runs --compare --------------------------------------------------------

@@ -72,7 +72,144 @@ def test_validator_rejects_bad_json(plugin) -> None:
 
     result = validate_vision_scene("not-json")
     assert not result.ok
-    assert any(e.code == "invalid_json" for e in result.errors)
+    err = next(e for e in result.errors if e.code == "invalid_json")
+    assert err.layer == 1
+    assert err.location and "line" in err.location
+    assert err.hint and "JSON" in err.hint
+
+
+def test_validator_rejects_non_object_root(plugin) -> None:
+    from vision_plugin.validator import validate_vision_scene
+
+    result = validate_vision_scene("[1, 2, 3]")
+    assert not result.ok
+    err = next(e for e in result.errors if e.code == "not_object")
+    assert err.location == "$"
+    assert "list" in err.message
+    assert err.hint
+
+
+def test_validator_schema_error_names_location(plugin) -> None:
+    from vision_plugin.validator import validate_vision_scene
+
+    # scene.label must be a string per schema; a number fails layer 2.
+    payload = {
+        "scene": {"label": 1},
+        "detections": [],
+        "pose": {
+            "keypoints": [
+                {"name": n, "x": 0.0, "y": 0.0}
+                for n in [
+                    "head",
+                    "neck",
+                    "l_shoulder",
+                    "r_shoulder",
+                    "l_elbow",
+                    "r_elbow",
+                    "l_wrist",
+                    "r_wrist",
+                    "hip",
+                    "l_knee",
+                    "r_knee",
+                    "feet",
+                ]
+            ]
+        },
+    }
+    result = validate_vision_scene(
+        json.dumps(payload),
+        schema_path=ROOT / "datasets" / "schema.json",
+    )
+    assert not result.ok
+    err = next(e for e in result.errors if e.code == "schema")
+    assert err.layer == 2
+    assert err.location == "scene/label"
+    assert err.hint and "schema.json" in err.hint
+
+
+def test_validator_reports_every_bad_detection(plugin) -> None:
+    from vision_plugin.validator import validate_vision_scene
+
+    payload = {
+        "scene": {"label": "plain"},
+        "detections": [
+            {"label": "circle"},  # missing box
+            "not-an-object",
+            {"label": "square", "box": [0.1, 0.2]},  # wrong box length
+        ],
+        "pose": {"keypoints": [{"name": "head", "x": 0.5, "y": 0.1}]},
+    }
+    result = validate_vision_scene(json.dumps(payload))
+    assert not result.ok
+    det_errors = [
+        e
+        for e in result.errors
+        if e.layer == 3 and e.location and e.location.startswith("detections")
+    ]
+    assert len(det_errors) >= 3
+    assert any(e.code == "detection_item" and e.location == "detections[0]" for e in det_errors)
+    assert any(e.code == "detection_item" and e.location == "detections[1]" for e in det_errors)
+    assert any(e.code == "box_shape" and e.location == "detections[2].box" for e in det_errors)
+    assert all(e.hint for e in det_errors)
+
+
+def test_validator_enum_errors_list_allowed_values(plugin) -> None:
+    from vision_plugin.constants import KEYPOINT_NAMES, SCENE_LABELS, SHAPE_LABELS
+    from vision_plugin.validator import validate_vision_scene
+
+    payload = {
+        "scene": {"label": "nebula"},
+        "detections": [{"label": "hexagon", "box": [0.1, 0.2, 0.3, 0.4]}],
+        "pose": {"keypoints": [{"name": "head", "x": 0.5, "y": 0.1}]},
+    }
+    result = validate_vision_scene(json.dumps(payload))
+    assert not result.ok
+
+    scene_err = next(e for e in result.errors if e.code == "scene_label")
+    assert scene_err.location == "scene.label"
+    assert "nebula" in scene_err.message
+    assert all(label in (scene_err.hint or "") for label in SCENE_LABELS)
+
+    shape_err = next(e for e in result.errors if e.code == "shape_label")
+    assert shape_err.location == "detections[0].label"
+    assert "hexagon" in shape_err.message
+    assert all(label in (shape_err.hint or "") for label in SHAPE_LABELS)
+
+    kp_err = next(e for e in result.errors if e.code == "keypoints_missing")
+    assert kp_err.location == "pose.keypoints"
+    assert "neck" in kp_err.message
+    assert all(name in (kp_err.hint or "") for name in KEYPOINT_NAMES)
+
+
+def test_markdown_summary_renders_sample_failures(tmp_path: Path) -> None:
+    from maatml.evaluation.runner import Report, write_markdown_summary
+
+    report = Report(
+        model_id="vision",
+        task="vision_multitask",
+        dataset="d",
+        n=1,
+        metrics={"all_layers_pass_rate": 0.0},
+        sample_failures=[
+            {
+                "sample_id": "s1",
+                "errors": [
+                    {
+                        "layer": 4,
+                        "code": "scene_label",
+                        "message": "unknown scene label 'nebula'",
+                        "location": "scene.label",
+                        "hint": "use one of: 'plain', 'gradient'",
+                    }
+                ],
+            }
+        ],
+    )
+    body = write_markdown_summary(report, tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "## Sample failures" in body
+    assert "`s1`" in body
+    assert "L4/scene_label at `scene.label`" in body
+    assert "fix: use one of: 'plain', 'gradient'" in body
 
 
 def test_metrics_perfect_match(plugin) -> None:

@@ -23,11 +23,14 @@ Causal LoRA SFT example: given a customer support ticket, emit triage JSON.
 4. **Summary quality**: non-empty, single line, ≤ 20 words
 
 Layer 3 is the point: it ties two fields together by a task rule a plain JSON
-schema cannot express. The same validator gates the seed data, scores
+schema alone does not check in this example. The same validator gates the seed data, scores
 `maatml evaluate`, and can re-check live output at `maatml serve
 /predict?validate=1`.
 
 ## Lifecycle
+
+Run from the repository root after `pip install -e ".[ml]"` in a virtual
+environment, as described in the quickstart.
 
 ```bash
 maatml prepare  examples/support-ticket-triage/
@@ -52,4 +55,7 @@ maatml evaluate examples/support-ticket-triage/ --gate
 Add more tickets under `datasets/samples/seed_samples.jsonl`, then re-prepare.
 The committed corpus is intentionally small; it demonstrates the `causal_sft`
 path, the routing contract, and the standalone model-folder layout, not
-production triage quality. Raise the gates after training on a larger corpus.
+production triage quality. The configured gates are explicitly **pending
+re-measurement**: their historical measurements used a contaminated split.
+Re-evaluate on the corrected population and derive floors from the resulting
+report with `maatml gates derive examples/support-ticket-triage --run RUN_ID --write`.

@@ -15,6 +15,23 @@ from .registry import COMPILERS, discover_plugins
 from .utils.io import sha256_file, write_json
 
 
+def promotion_status(manifest: dict[str, Any]) -> tuple[bool, str]:
+    """Whether this export may be compiled for production.
+
+    A rehearsal (``smoke_gated``) or an ungated / failed evaluate must not
+    become a device artifact that later reads as a gate pass. Core owns that
+    claim so every compiler plugin sees the same refusal.
+    """
+    evidence = manifest.get("gate_evidence")
+    if not isinstance(evidence, dict) or not evidence:
+        return False, "manifest has no gate_evidence"
+    if evidence.get("smoke_gated"):
+        return False, "export is smoke-gated; run a production evaluate --gate"
+    if evidence.get("passed") is not True:
+        return False, "gate did not pass"
+    return True, "production gate passed"
+
+
 def parse_options(raw: list[str] | None) -> dict[str, str]:
     """Parse ``KEY=VALUE`` strings into a dict. Empty value is allowed."""
     options: dict[str, str] = {}
@@ -38,6 +55,7 @@ def compile_export(
     target: str,
     out_dir: str | Path,
     options: Optional[dict[str, str]] = None,
+    require_gated: bool = False,
 ) -> Path:
     """Run a registered compiler against an export (or deployment) directory.
 
@@ -45,7 +63,11 @@ def compile_export(
     the loaded ``manifest.json``, and free-form ``options``. It must return the
     populated ``out_dir`` (or a path inside it). Core then writes a thin
     ``target_manifest.json`` that records the source identity, compiler name,
-    and option keys so a serving host can refuse a mismatched device artifact.
+    option keys, and ``promotion_eligible`` so a serving host can refuse a
+    mismatched or ungated device artifact.
+
+    ``require_gated`` refuses before the plugin runs when ``gate_evidence`` is
+    missing, failed, or ``smoke_gated``.
     """
     discover_plugins()
     export_dir = Path(export_dir).resolve()
@@ -53,6 +75,9 @@ def compile_export(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     root, manifest = load_manifest(export_dir)
+    eligible, reason = promotion_status(manifest)
+    if require_gated and not eligible:
+        raise ValueError(f"compile --require-gated: {reason}")
     compiler = COMPILERS.require(target)
     opts = dict(options or {})
     result = compiler(root, out_dir, manifest=manifest, options=opts)
@@ -88,6 +113,8 @@ def compile_export(
         },
         "options": opts,
         "out_dir": str(result_path if result_path.is_dir() else result_path.parent),
+        "promotion_eligible": eligible,
+        "promotion_reason": reason,
     }
     write_json(out_dir / "target_manifest.json", target_manifest)
     return result_path

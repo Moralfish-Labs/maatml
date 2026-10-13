@@ -8,8 +8,355 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-13
+
+### Changed
+
+- Refreshed documentation and example setup against the current CLI and plugin
+  contracts. Added a CLI reference, troubleshooting and contributor pages;
+  exposed configuration and agent references in MkDocs navigation. Strict
+  documentation builds now check navigation, local links and anchors in CI.
+
+### Fixed
+
+- The rollout CLI regression test isolates device resolution so the fake
+  policy runs in Torch-free CI on Linux, macOS and Windows.
+
+- Chat rendering and masking pass tool definitions and template options as
+  explicit typed arguments. Tool-call normalization narrows the optional
+  function payload before reading it. This clears the type-check failures
+  without changing message normalization or assistant loss masks.
+
+- Causal SFT masked non-final assistant turns of a multi-turn row against
+  shifted offsets: Qwen3 renders an empty think block only on the final
+  assistant turn, so each earlier target started late and ran into the next
+  user turn. Assistant spans are now located on one full render and decoded
+  back before they are trained; single-turn rows mask byte-identically.
+
+- `maatml gates derive --write` left `model.yml` unparseable when the
+  section's gates were the inline empty mapping `gates: {}`: the rewriter
+  kept that line and put the block beneath it. The line now becomes a block
+  head.
+
+### Documentation
+
+- Refresh the release status through 0.13.0 and distinguish implemented
+  Unreleased features from planned artifact distribution. Document generic
+  orchestration ownership, exact checkpoint recovery, portable run evidence,
+  tool-call training, rollout collection and train-only rows.
+
 ### Added
 
+- **Tool-call chat rows in causal SFT.** Rows may carry `tools` (passed to
+  the chat template as `tools=`), `chat_template_kwargs` (per-row template
+  variables such as `enable_thinking`), assistant `tool_calls`, and `tool`
+  turns. Every assistant turn, tool-call turns included, is a supervised
+  target; system, user, tool results and the tools preamble are masked. A
+  tool row whose spans cannot be located exactly raises instead of training.
+  `prepare` checks the structure of these fields, the `causal_sft` predictor
+  renders tool rows with their tools (`prompt_ids`) and parses
+  `<tool_call>` blocks back (`predict_structured`,
+  `maatml.utils.chat.parse_tool_calls`). `scripts/check_chat_masks.py`
+  dry-runs rendering and masking over a rows file with a cached tokenizer.
+
+- **`maatml rollout` and the rollout environment protocol
+  (`maatml.rollout_env/1`).** A checkpoint acts in an environment that lists
+  the legal candidates, applies the chosen one, and verifies the outcome
+  itself. The driver records every decision with its log-probabilities and,
+  with `--label`, the valid set the environment's teacher accepts at each
+  state the policy reached, which is what DAgger relabeling trains on.
+  Environments plug in as the new `environment` plugin kind or as any program
+  speaking JSON lines over stdio (`--env-command`). `line_world` ships as the
+  example environment. See `docs/rollouts.md`.
+- **Train-only rows in `prepare_rows`.** `train_rows` join train after the
+  hash split and never reach val or the benchmark, so rows a policy collected
+  from its own rollouts train the next round without moving the numbers
+  earlier runs were measured on. A train-only row whose group is already in
+  val or test is refused.
+
+## [0.13.0] - 2026-08-28
+
+### Fixed
+
+- **`run` accepts every evaluation key `config` does.** `EvaluationSpec`
+  forbids extra keys so a typo is caught before training spends the compute,
+  but it knew five keys where `config._EVALUATION_KNOWN_KEYS` knows eleven. A
+  folder declaring `slices`, `cache_predictions`, `gates_benchmark`,
+  `operating_point` or `batch_size` passed `validate`, passed `evaluate`, and
+  was refused by `run` with `evaluation: section is invalid: Extra inputs are
+  not permitted` — every stage individually, nothing end to end, which left the
+  evidence layer unreachable through the runner. The remaining known keys are
+  now declared; the runner does not read them, it carries them so the section
+  it validates is the section `config.py` accepts. The extra-forbid typo check
+  is unchanged, and a test asserts `EvaluationSpec` covers
+  `_EVALUATION_KNOWN_KEYS` so the two cannot drift apart again.
+
+### Added
+
+- **`maatml --version`.** Prints `maatml <version>` and exits, so a tool probe
+  can read the version without loading a model folder. `maatml.__version__`
+  comes from the installed package metadata and falls back to
+  `0.0.0+unknown` in a source tree with no install.
+
+## [0.12.0] - 2026-08-23
+
+### Added
+
+- **Batched evaluate.** A predictor may implement
+  `predict_batch(rows) -> list[str]` (one output per row, in order);
+  `evaluation.batch_size: N` or `maatml evaluate --batch-size N` then feeds
+  the split through it in chunks of N with one device sync per chunk, so a
+  GPU predictor stops idling between rows. Outputs, validation, slices, the
+  prediction cache and every metric are per row as before. The report
+  records `extras.batch_size`, and at N > 1 the per-row latency is the
+  chunk's wall time divided by its rows, flagged `extras.latency_amortized`.
+  `--batch-size` is a device knob, not an override: it combines with
+  `--gate`. A predictor without `predict_batch` runs one row at a time with a
+  warning; a chunk returning the wrong number of outputs is an error.
+  `training.select_by` and every other caller of the harness inherit the
+  file's `batch_size`.
+
+## [0.11.2] - 2026-08-23
+
+### Fixed
+
+- `maatml validate` no longer warns that the key named by
+  `evaluation.operating_point.threshold_key` is unrecognized: it is the key
+  `operating-point derive --write` sets.
+
+## [0.11.1] - 2026-08-23
+
+Two gaps found while a real model folder adopted the evidence layer.
+
+### Added
+
+- **`dataset.attribution_field`**. The attribution table is keyed on each
+  row's `source` by default; a corpus whose `source` is finer than its
+  licence (one value per annotation file, `benchmark:holdout` for pinned
+  rows) names the licence-level field instead, typically `dataset`. The
+  corpus lock records the field; an empty or non-string value is refused.
+- **`maatml evaluate --set K=V`**. Overrides `model.yml` for that one
+  evaluate (repeatable, same syntax as `train --set`), recorded on the report
+  as `extras.overrides`, refused together with `--gate` or `--blind`. This is
+  how the val prediction cache for `operating-point derive` is written at a
+  low decode cut without editing the file: the predictor receives the
+  overridden `model_def`, and `extras.decode_threshold` records the cut the
+  cache was decoded at.
+
+## [0.11.0] - 2026-08-23
+
+The Evidence layer (#34): everything between a finished run and an honest
+floor, as lifecycle rather than per-folder scripts. Versioned eval reports
+with slices, counts and a prediction cache; floors derived by `maatml gates
+derive` with tiers and a population stamp; `maatml ship-check`; the operating
+point derived on val with recorded test spends; named populations
+(isolation, pins, benchmark version, a once-only blind evaluate, seed
+studies); a sidecar licence table gating `prepare` and a corpus lock in the
+export manifest; checkpoint selection on val, pathology signatures failing
+the smoke tier, `distill` refusing held-out prompts; and runs that travel
+(`runs --pack` / `--adopt`, an environment manifest on every record,
+`maatml report` from the records alone).
+
+### Added
+
+- **`report_version`** on every eval report. `Report.read(strict=True)`
+  refuses a report that predates the field or lacks a required one, so a
+  derivation never reads a missing number as zero; lenient reads still load
+  older reports as version 0.
+- **`evaluation.slices`**. A list of row fields (or `{field, values}`); the
+  harness reports `n`, `pass_rate` and the Wilson 95 % lower bound per value,
+  `(absent)` for rows without the field, and `n: 0` with no rate for a
+  declared value that has no rows. Rendered in the markdown summary.
+- **`evaluate --cache` / `evaluation.cache_predictions`**. Writes
+  `<run>.predictions.jsonl` beside the report: a `maatml.predictions/1`
+  header (split, content sha256, checkpoint, report name) and one line per
+  row with the row's metadata, the raw output, the validator verdict and the
+  parsed object. `read_predictions` refuses a torn or foreign file. The
+  report's `extras` now always carry `split_sha256` and, when cached,
+  `predictions_cache`.
+- `maatml.evaluation.stats`: `wilson_interval` / `wilson_lower`, exact at the
+  0 and n boundaries, raising on `n <= 0`; `cluster_bootstrap_lower` and
+  `floor2`.
+- **`maatml gates derive`**. Floors from one or more runs' reports: Wilson
+  95 % lower bound at each metric's own denominator, the per-metric minimum
+  across runs, `--min-n` refusal for thin denominators, and a group-cluster
+  bootstrap (`--cluster-by`, `--min-groups`) when the run carries a
+  predictions cache. `--write` rewrites `<section>.gates` in `model.yml`
+  textually, keeping comments and tiers, and stamps
+  `evaluation.gates_benchmark` with the split hash.
+- **Report `counts`**: `{metric: {k, n}}` behind every harness rate and
+  slice; a metrics plugin adds its own through a `__counts__` entry, which is
+  lifted out of `metrics`.
+- **Gate tiers**: a gate value may be `{min, tier}`; `advisory` misses are
+  recorded under `gates.advisory_failed` and never fail evaluate, the
+  lifecycle runner, or `compile --require-gated`.
+- **Slice gates**: `"slice:<field>=<value>"` gates that slice's pass rate; an
+  empty slice reads `None` and fails.
+- **`maatml ship-check CANDIDATE BASELINE`**. The release decision in one
+  verdict: absolute (every blocking floor met at production tier), delta
+  (no gated metric drops more than one row at n >= 30, or `--max-regression`),
+  and population (same split, else `--replay` re-evaluates both checkpoints
+  over the current test split under `output/eval/replay/` without touching
+  either run's own evidence). Exit 1 on DO NOT SHIP; `--json` for the
+  verdict. `evaluate_model` gained `out_dir` and `record_gates` for this.
+- **`maatml operating-point derive`** and `evaluation.operating_point`
+  (`threshold_key`, `objective`, `budget: {metric, max}`, `sources`, `grid`).
+  Sweeps the predictor's new `rescore(rows, threshold)` over a val prediction
+  cache, skips cuts below the one the cache was decoded at, picks the best
+  objective under the budget, writes `<run>.<split>.operating_point.json`,
+  and with `--write` sets `evaluation.<threshold_key>` in `model.yml` with
+  the sweep as provenance. `--confirm-on-test` evaluates once on test at the
+  written cut and records a **test spend** on the run (`RunRecord.test_spends`;
+  listed by `maatml runs`; a repeat on the same benchmark warns). Deriving on
+  test is refused.
+- **Populations** (`dataset.isolation`, `dataset.pins`, `dataset.blind_samples`).
+  `isolation: {fields, policy}` declares the row hierarchy (fine → coarse) and
+  the level each of val / benchmark / blind must be disjoint from training at;
+  `pins: {val: [field:value], benchmark: [...]}` move whole groups after the
+  hash split, and a pinned population is exactly its pins. `prepare` refuses
+  to write splits that violate the policy, refuses a pin matching nothing,
+  checks the blind manifest for leakage without writing it, and `audit`
+  re-checks the prepared splits.
+- **Benchmark version**: `output/prepared/benchmark.json` records an
+  order-insensitive hash of the test rows plus the pins; reports carry it as
+  `extras.benchmark_version`. An in-place edit of `benchmark_samples` is
+  refused — version the file instead.
+- **`evaluate --blind`**: spends `dataset.blind_samples` once on a candidate
+  whose production gate pass is current (`RunRecord.gated_fingerprint`:
+  evaluation config + weights, recorded on every non-smoke test gate pass);
+  gates enforced; `<run>.blind.json`; the spend is recorded on the run
+  (`blind_spends`, listed by `maatml runs`) and a repeat needs `--force`.
+- **`maatml train --seeds N`**: one recipe, N seeds (from `--seed`, default
+  0), each its own run; `output/seeds/<first-run>-xN.json` records the runs
+  and mean / sd / min / max per metric every run reported. `gates derive
+  --seed-study FILE` takes those runs (the per-metric minimum) alongside
+  `--run`.
+- Reports for non-test splits are named `<run>.<split>.json` (and their
+  caches likewise), so a val evaluate no longer overwrites the test report.
+  `extras.decode_threshold` records the cut the predictor decoded at.
+- **Population stamp**: with `--gate`, the gates payload records the split's
+  `benchmark_sha256`; when `evaluation.gates_benchmark` names another split
+  evaluate warns (`population_mismatch`), and `--strict-population` refuses.
+- **Sources carry their licence** (`dataset.attribution`). A sidecar Markdown
+  table with one row per `source` (`source`, `licence`, `commercial-use`,
+  `sign-off` required; `provenance` / `consent` and `attribution` read when
+  present; long headers and extra columns accepted). `prepare` refuses a row
+  without a `source` or without a table row, a blocked or unsigned sign-off,
+  and a `no` / `unknown` commercial-use whose sign-off does not record an
+  `accepted-risk — <name> <date>`; the acceptance is recorded in the lock
+  rather than passed as a flag.
+- **Corpus lock**: every prepare writes `output/prepared/corpus.lock.json` —
+  input files by sha256 and row count, the attribution rows used, the risk
+  accepted, and a `lock_sha256` over all of it. `export` copies it into
+  `manifest.json` as `corpus_lock`, and a lock that names sources also ships
+  as the bundle's `ATTRIBUTION.md` (listed in the manifest). The auto
+  `MODEL_CARD.md` from the Slim tranche will embed the same block.
+- **`training.select_by`**: after training, every saved `checkpoint-<step>`
+  and the final weights are evaluated on val with the evaluate harness; the
+  best by the named metric is recorded on the run (`selection`,
+  `selected_checkpoint`) and the run id resolves to it for evaluate, export
+  and serve, with evidence still recorded against the run
+  (`run_id_for_checkpoint`). Per-candidate reports under
+  `output/eval/select/<run>/`; a metric the harness does not report is an
+  error. `training.keep_checkpoints` sets `save_total_limit` (default 2) for
+  every trainer. `evaluate_model` gained `label`.
+- **Pathologies**: every report carries `pathologies[]` — `never_fires`
+  (no output, or recall ≤ 0.01 with precision ≥ 0.9 / absent),
+  `identical_output`, `one_class` — plus a metrics plugin's own
+  `__pathologies__`. The gates payload lists them; at the smoke tier each is a
+  failing blocking gate (`pathology:<name>`), so a never-firing fixture fails
+  `run --smoke` whatever the floor. Rendered in the markdown summary.
+- **`distill` refuses held-out prompts**: a pool prompt found in
+  `benchmark_samples`, `blind_samples` or the prepared val / test split, or a
+  pool row carrying a pinned group, stops the run before any teacher call. The
+  teacher cache now starts with a `maatml.teacher_cache/1` provenance header
+  (teacher, prompt pools by sha256, benchmark version), repeated on the
+  distill card; a cache that recorded nothing still leaves no file.
+- **Runs travel**: `maatml runs <dir> --pack RUN` writes
+  `output/bundles/<run>.maatml-run.tar.gz` — the run directory (without
+  `checkpoint-*` unless `--with-checkpoints`), the run's eval reports, caches
+  and selection reports, the registry record, the environment, and the
+  model-folder fingerprint (`spec_hash`), every file hashed. `--adopt BUNDLE`
+  unpacks it into the receiving folder, verifies every file, refuses another
+  identity or `model.yml` fingerprint and an existing run without `--force`,
+  and appends the record with its paths rewritten (`RunRecord.adopted_from`).
+  Records move; jobs do not.
+- **Environment manifest** (`maatml.environment/1`: git SHA, Python, OS,
+  maatml / torch / transformers / peft / safetensors, CUDA, cuDNN, GPUs and
+  driver, MPS, determinism settings) on every train record
+  (`RunRecord.environment`) and every evaluate (`extras.environment`, and
+  `gates.environment` when gated). Every train record now also carries
+  `spec_hash` (`spec_fingerprint`).
+- **`maatml report`**: Markdown (default, `output/REPORT.md`) or CSV of
+  runs, every eval report's metrics with their derivation (k / n and Wilson
+  95 % from `counts`) beside the floor that judged them, slice and pathology
+  gates, slices, seed statistics and spends — generated from `runs.jsonl`,
+  `output/eval/*.json` and `output/seeds/*.json` alone, so it regenerates
+  byte-identically and never reads `model.yml`.
+
+## [0.10.0] - 2026-08-17
+
+Gated device compiles, a shared capture path for custom servers, video-frame
+ingest, an Anthropic Messages serve wire, and `diffusion_lora` through kohya
+sd-scripts (#33).
+
+### Added
+
+- **`maatml compile --require-gated`**. Refuses before the compiler plugin
+  runs when `manifest.gate_evidence` is missing, `passed` is not true, or
+  `smoke_gated` is true. `target_manifest.json` now records
+  `promotion_eligible` and `promotion_reason` on every compile so a serving
+  host can refuse an ungated device artifact without reading SIP-specific
+  sidecars.
+- **`open_capture` / `LifecycleServer.record_capture`**. Custom servers
+  (DeepStream/UDS, …) can append the same `source: serve_capture` /
+  `approved: false` rows the HTTP backend writes. `--capture` still requires
+  `--auth-token`.
+- **`maatml ingest --video`**. A sidecar JSONL (`frame` / `timestamp_ms` /
+  `t` plus gold) plus a video file becomes validator-gated image rows;
+  ffmpeg extracts PNGs under `datasets/samples/images/`. Annotation dialects
+  stay in the sidecar.
+- **`maatml serve --server anthropic`**. A translating proxy that speaks
+  Anthropic's Messages API in front of an OpenAI-compatible upstream
+  (llama.cpp). Options cover `upstream`, `model`, `timeout`, `tool_style`
+  (`native` / `inline`), and `call_retries`. `--enforce` / `--max-retries`
+  gate replies with the model folder's validator the same way they gate
+  `http`.
+- **`architecture: diffusion_lora`**. Image LoRA training driven through a
+  kohya sd-scripts checkout. `format: image_caption_folder` prepares a
+  flat image+caption folder into the usual splits; the trainer materializes
+  kohya's repeats layout, records the run, and stops the child on SIGTERM
+  so an abort does not leave an orphan holding the GPU.
+- **`distill.target_format: text`**. Hands the teacher's reply to the
+  validator as it stands instead of requiring JSON. A string gold target is
+  the assistant text itself — `render_assistant_target` no longer wraps it
+  in quotes.
+- **Eval progress**. The shared eval loop prints `eval N/total` with a
+  remaining-time estimate while it generates, so a long split is not a
+  silent hang.
+- **Agent skill docs** under `docs/skill/` (model.yml, plugins, flywheel).
+
+## [0.9.1] - 2026-08-10
+
+Pluggable compile/serve runtimes, actionable `vision_scene` validator feedback,
+`maatml audit` (renamed from `doctor`), and a slimmer example set.
+
+### Added
+
+- **`ValidationError.hint`** and actionable `vision_scene` errors (#6). Every
+  validator failure can carry a short "how to fix it" string; eval
+  `sample_failures`, the eval markdown summary, serve 422 payloads / retry
+  feedback, and datagen reject rows (`_validation_errors`) all surface it.
+  `vision_scene` now names what failed, where (`location`), and the allowed
+  values; it reports every bad detection (capped) instead of stopping at the
+  first. The vision example README documents the four layers, error codes, and
+  how they map to `evaluation.gates`.
+- **`maatml audit` pre-flight checks** (renamed from `doctor`; see Changed):
+  configured `evaluation.metrics` / `evaluation.predictor` /
+  `dataset.generator` must resolve in the registries; seed / benchmark corpus
+  row counts; gate keys compared against the latest `output/eval/*.json`; a
+  quarantined `runs.jsonl.corrupt`; QLoRA configured on a non-CUDA auto device;
+  optional Hub cache probe for `base_model`.
 - **Compiler and server registries.** `@register_compiler` / `@register_server`
   plus `maatml compile <export-dir> --target NAME --out DIR [--option K=V]` and
   `maatml serve … --server NAME [--server-option K=V]`. The built-in `http`
@@ -32,6 +379,12 @@ for the Python package and per-model versions under `examples/`.
   report. Repeatable; `metric=0.05` overrides one metric and may name an
   ungated metric. The default allowance judges gated metrics only, since
   ungated keys like `eval_loss` improve downward.
+
+### Changed
+
+- **`maatml doctor` → `maatml audit`** (breaking, no alias). Same exit-code
+  contract (errors → 1, warnings → 0) and `--json` shape; call sites and docs
+  updated.
 
 ### Removed
 
@@ -582,7 +935,7 @@ plugin security floor, and config honesty.
 - **Renamed the project from flow-ml to MaatML.** Package / CLI / entry-point
   group are now `maatml` / `maatml` / `maatml.plugins`. Resolves the name
   collision with [MLflow](https://mlflow.org/). GitHub repo:
-  [moralfish/maatml](https://github.com/moralfish/maatml).
+  [Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maatml).
 - **Examples-first restructure:** `jcl-validator` and `spool-interpreter` live
   under `examples/` with folder-local plugins (`jcl_plugin` / `spool_plugin`).
   Core owns architectures (`causal_sft`, `seq2seq`, `multi_head_classifier`);

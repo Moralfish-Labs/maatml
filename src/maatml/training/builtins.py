@@ -46,3 +46,10 @@ def train_orpo(model_def: Any, **kwargs: Any) -> Any:
     from .preference import train_orpo as _train_orpo
 
     return _train_orpo(model_def, **kwargs)
+
+
+@register_trainer("diffusion_lora")
+def train_diffusion_lora(model_def: Any, **kwargs: Any) -> Any:
+    from .diffusion import train_diffusion_lora as _train
+
+    return _train(model_def, **kwargs)

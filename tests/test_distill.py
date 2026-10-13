@@ -231,6 +231,31 @@ def test_load_prompts_from_jsonl_and_text(tmp_path) -> None:
     assert load_prompts(tmp_path / "p.txt", "request") == ["line one", "line two"]
 
 
+def test_a_pool_field_travels_onto_the_accepted_row(tmp_path, teacher) -> None:
+    """A pool that groups its prompts keeps the grouping through distillation.
+
+    ``dataset.group_by`` names a field on the row. A pool declaring one whose
+    accepted rows do not carry it splits silently by something else, and
+    paraphrases of a single situation land on both sides of the split.
+    """
+    md = _model(tmp_path)
+    write_jsonl(
+        md.resolve("datasets/prompts.jsonl"),
+        [
+            {"request": "good prompt one", "scenario": "read:a", "family": "pool_wide"},
+            {"request": "good prompt two", "scenario": "read:a"},
+        ],
+    )
+    run_distill(md)
+    rows = list(iter_jsonl(md.resolve("datasets/samples/seed_samples.jsonl")))
+
+    assert [row["scenario"] for row in rows] == ["read:a", "read:a"]
+    # `family` stays distill's own, one per prompt. A pool-wide family taken at
+    # face value would collapse every accepted row into a single split group.
+    assert rows[0]["family"] != rows[1]["family"]
+    assert not any(row["family"].startswith("pool_wide") for row in rows)
+
+
 def test_cache_key_binds_prompt_and_teacher() -> None:
     a = TeacherCache.key(_prompt_hash("x"), "m", "r1")
     b = TeacherCache.key(_prompt_hash("x"), "m", "r2")
@@ -415,3 +440,73 @@ def test_consecutive_teacher_failures_abort_the_run(tmp_path, monkeypatch) -> No
     assert "consecutive teacher failures" in summary["aborted"]
     # Stopped early rather than calling the dead endpoint for every prompt.
     assert summary["teacher_failures"] == 5
+
+
+def test_a_blank_teacher_reply_is_not_cached(tmp_path, monkeypatch) -> None:
+    """A reasoning teacher that spends its budget thinking answers with nothing.
+
+    Caching that would be permanent: the prompt returns blank on every later
+    run, `--replay` included, and no token budget can recover it.
+    """
+
+    class _Mute:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def chat_completions(self, messages, **kwargs):
+            return "   "
+
+    monkeypatch.setattr(distill_mod, "TeacherClient", _Mute)
+    md = _model(tmp_path)
+    summary = run_distill(md)
+
+    assert summary["accepted"] == 0
+    assert summary["teacher_blank"] == len(PROMPTS)
+    # Nothing recorded at all, so raising the budget and re-running reaches the
+    # teacher again rather than replaying the silence.
+    cache_path = md.resolve("datasets/cache.jsonl")
+    assert not cache_path.is_file() or not list(iter_jsonl(cache_path))
+
+
+def test_a_string_target_is_not_wrapped_in_quotes() -> None:
+    """`target_format: text` writes a string target, which is the text itself.
+
+    Serialising it would train the model to answer inside a string literal:
+    correct content, every quote escaped, and nothing downstream accepts it.
+    """
+    from maatml.training.sft_config import render_assistant_target
+
+    said = 'Reading the file.\n{"calls":[{"name":"read_file","input":{"path":"a"}}]}'
+    assert render_assistant_target({"expected": said}, "expected") == said
+    # A structured target still serialises, compactly.
+    assert render_assistant_target({"expected": {"ok": True}}, "expected") == '{"ok":true}'
+
+
+def test_a_relocated_run_resolves_to_the_canonical_checkpoint_dir(tmp_path) -> None:
+    """A run trained elsewhere records that machine's absolute path.
+
+    The weights come home to `output/checkpoints/<run_id>`; the path in the
+    record still points at the runtime that is gone. Resolving by run id has to
+    find them, or the bundle exports from an anonymous directory and its
+    manifest records no gate evidence.
+    """
+    from maatml.runs import RunRecord, _append_record, resolve_checkpoint
+
+    md = _model(tmp_path)
+    run_id = "20260813-024700-13417d"
+    landed = md.checkpoints_dir / run_id
+    landed.mkdir(parents=True, exist_ok=True)
+    (landed / "model.safetensors").write_bytes(b"weights")
+
+    _append_record(
+        md,
+        RunRecord(
+            run_id=run_id,
+            identity="distill-test@0.1.0",
+            architecture="causal_sft",
+            status="completed",
+            started_at="2026-08-13T02:47:00Z",
+            out_dir="/content/gone/output/checkpoints/" + run_id,
+        ),
+    )
+    assert resolve_checkpoint(md, run_id) == landed.resolve()

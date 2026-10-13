@@ -65,8 +65,14 @@ def from_pretrained_kwargs(
     attn_implementation: Optional[str] = None,
     quantization: Optional[dict[str, Any] | Any] = None,
     revision: Optional[str] = None,
+    frozen_base: bool = False,
 ) -> dict[str, Any]:
-    """Keyword args shared by causal / seq2seq / encoder ``from_pretrained``."""
+    """Keyword args shared by causal / seq2seq / encoder ``from_pretrained``.
+
+    ``frozen_base`` says the loaded weights will not be trained — a LoRA, where
+    only the adapter carries gradients. It lets the fp32-master policy be
+    skipped on mps/cpu; see :func:`maatml.device.resolve_load_dtype`.
+    """
     kwargs: dict[str, Any] = {}
     if quantization is not None:
         ensure_quantization_allowed(profile)
@@ -75,7 +81,7 @@ def from_pretrained_kwargs(
         # Device map lets bitsandbytes place layers; HF Trainer still owns the loop.
         kwargs.setdefault("device_map", "auto")
     else:
-        dtype = resolve_load_dtype(profile, precision)
+        dtype = resolve_load_dtype(profile, precision, frozen_base=frozen_base)
         if dtype is not None:
             kwargs["torch_dtype"] = dtype
     if attn_implementation:

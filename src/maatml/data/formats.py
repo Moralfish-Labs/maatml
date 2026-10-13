@@ -33,7 +33,15 @@ _ROLE_MAP = {
 
 def _preserve_meta(row: dict) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key in ("sample_id", "family", "source", "category"):
+    for key in (
+        "sample_id",
+        "family",
+        "source",
+        "category",
+        "surface",
+        "tools",
+        "chat_template_kwargs",
+    ):
         if key in row and row[key] is not None:
             out[key] = row[key]
     return out
@@ -98,8 +106,11 @@ def is_degenerate(row: dict) -> bool:
     has_user = any(
         m.get("role") == "user" and str(m.get("content") or "").strip() for m in messages
     )
+    # A turn that only calls tools is a real target too.
     has_assistant = any(
-        m.get("role") == "assistant" and str(m.get("content") or "").strip() for m in messages
+        m.get("role") == "assistant"
+        and (str(m.get("content") or "").strip() or m.get("tool_calls"))
+        for m in messages
     )
     return not (has_user and has_assistant)
 

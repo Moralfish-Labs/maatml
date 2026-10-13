@@ -29,10 +29,13 @@ examples/vision-vlm/
 
 ## Lifecycle
 
-```bash
-pip install -e ".[dev,ml,vision]"   # training stack (vllm extra is Linux-only)
+Run these commands from the repository root in an activated virtual
+environment. The editable install matches the example to this source revision.
 
-# Optional: grow the corpus (starter 16-row set is committed)
+```bash
+pip install -e ".[ml,vision]"   # training stack (vllm extra is Linux-only)
+
+# Generate the images and matching rows before preparing (images are not tracked)
 python examples/vision-vlm/scripts/build_seeds.py --target 300
 
 maatml validate examples/vision-vlm
@@ -87,4 +90,6 @@ The predictor switches to the OpenAI-compatible chat-completions API when
 | `scene_mention_rate` | >= 0.96 | background style word appears |
 | `shape_mention_f1` | >= 0.65 | mentioned shape types vs gold |
 
-Raise gates after a longer train on a larger corpus (`--target 300+`).
+The table reflects the configured example gates, not a fresh measurement.
+After changing the corpus, evaluate an explicit run and derive supported
+floors with `maatml gates derive`; retain the report and population hash.

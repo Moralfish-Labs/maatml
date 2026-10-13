@@ -141,7 +141,23 @@ def build_manifest(
     if run_id:
         manifest["run_id"] = run_id
         manifest["gate_evidence"] = _gate_evidence(model_def, run_id)
+    lock = _corpus_lock(model_def)
+    if lock is not None:
+        manifest["corpus_lock"] = lock
     return manifest
+
+
+def _corpus_lock(model_def: ModelDefinition) -> Optional[dict[str, Any]]:
+    """The prepare-time corpus lock, so a bundle names the sources that trained it."""
+    try:
+        from ..data.attribution import read_corpus_lock
+
+        lock = read_corpus_lock(Path(model_def.prepared_dir))
+    except Exception:  # noqa: BLE001  a manifest must not fail on a torn lock
+        return None
+    if lock is None:
+        return None
+    return {k: v for k, v in lock.items() if k != "kind"}
 
 
 def _gate_evidence(model_def: ModelDefinition, run_id: str) -> dict[str, Any]:
@@ -168,7 +184,17 @@ def _gate_evidence(model_def: ModelDefinition, run_id: str) -> dict[str, Any]:
 
 
 def write_manifest(export_dir: Path, manifest: dict[str, Any]) -> Path:
-    return write_json(Path(export_dir) / "manifest.json", manifest)
+    """Write ``manifest.json``; a lock with sources also ships as ``ATTRIBUTION.md``."""
+    from ..data.attribution import ATTRIBUTION_FILE, write_attribution_file
+
+    export_dir = Path(export_dir)
+    lock = manifest.get("corpus_lock")
+    if isinstance(lock, dict) and lock.get("sources"):
+        path = write_attribution_file(export_dir, lock)
+        entries = [e for e in manifest.get("files", []) if e.get("path") != ATTRIBUTION_FILE]
+        entries.extend(_file_entries(export_dir, [path]))
+        manifest["files"] = entries
+    return write_json(export_dir / "manifest.json", manifest)
 
 
 def amend_manifest(

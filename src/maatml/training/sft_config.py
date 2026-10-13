@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -12,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # used to fall through resolve_load_dtype as "fp32", so `precision: bfloat16`
 # or a typo trained at a precision nobody asked for.
 VALID_PRECISIONS = ("bf16", "fp16", "fp32")
+# Read by the lifecycle after training, not by any trainer.
+LIFECYCLE_TRAINING_KEYS = frozenset({"select_by"})
 
 
 def reject_unknown_training_keys(
@@ -25,7 +28,7 @@ def reject_unknown_training_keys(
     ``training_config`` is hashed into the lifecycle fingerprint the typo'd key
     still makes the run look legitimately fresh.
     """
-    unknown = sorted(set(training) - known)
+    unknown = sorted(set(training) - known - LIFECYCLE_TRAINING_KEYS)
     if unknown:
         raise ValueError(
             f"Unknown training key(s) for {architecture}: {', '.join(unknown)}. "
@@ -102,6 +105,8 @@ class SFTTrainConfig(BaseModel):
     attn_implementation: Optional[str] = None
     dataloader_workers: Optional[int] = None
     model_revision: Optional[str] = None
+    # save_total_limit: how many checkpoint-* dirs survive for select_by to compare.
+    keep_checkpoints: int = Field(default=2, ge=1)
 
     @field_validator("precision")
     @classmethod
@@ -114,3 +119,22 @@ class SFTTrainResult:
     out_dir: Path
     metrics: dict[str, float]
     train_runtime: float
+
+
+def render_assistant_target(sample: dict, target_field: str) -> str:
+    """Render the gold assistant content.
+
+    A structured target is serialised compactly: no indent, to keep the token
+    count down, and the runtime parses pretty or compact equally well.
+
+    A target that is already a string **is** the assistant's text, and is used
+    as it stands. Passing it through ``json.dumps`` would wrap it in quotes and
+    escape every quote inside it, and the model learns to answer that way —
+    correct content inside a string literal, which no validator downstream
+    accepts. ``distill.target_format: text`` writes string targets, so this is
+    the difference between a model that answers and one that answers in quotes.
+    """
+    payload = sample[target_field]
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

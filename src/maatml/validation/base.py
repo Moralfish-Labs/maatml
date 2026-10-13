@@ -23,6 +23,8 @@ class ValidationError:
     code: str
     message: str
     location: Optional[str] = None
+    # Optional "how to fix it" guidance for humans and retry feedback.
+    hint: Optional[str] = None
 
 
 @dataclass

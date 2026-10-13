@@ -58,6 +58,41 @@ def make_nan_guard_callback():
     return NanGuardCallback.create()
 
 
+class CacheReleaseCallback:
+    """Release the backend allocator's cache during training, not only after.
+
+    On MPS the cache is never reclaimed on its own, so a run's footprint grows
+    step over step until unified memory is exhausted and the machine pages.
+    The cost is not a stall but a slide: a 1.7B LoRA measured 11.5 s/step at
+    step 1 and 225 s/step by step 25, with swap climbing throughout.
+
+    Releasing has its own cost, so it is periodic rather than per step, and
+    ``empty_cache`` is a no-op on backends that manage their own.
+    """
+
+    @staticmethod
+    def create(profile, every: int = 8):
+        from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+
+        class _CacheReleaseCallback(TrainerCallback):
+            def on_step_end(
+                self,
+                args: TrainingArguments,
+                state: TrainerState,
+                control: TrainerControl,
+                **kwargs,
+            ):
+                if every > 0 and state.global_step % every == 0:
+                    profile.empty_cache()
+
+        return _CacheReleaseCallback()
+
+
+def make_cache_release_callback(profile, every: int = 8):
+    """Return a ``TrainerCallback`` that drops the allocator cache periodically."""
+    return CacheReleaseCallback.create(profile, every)
+
+
 def _git_sha(cwd: Optional[Path] = None) -> Optional[str]:
     try:
         out = subprocess.check_output(

@@ -66,7 +66,21 @@ def _default_validate_fn(
             contracts_path=contracts_path,
             user_prompt=row.get(request_field),
         )
-        return bool(result.ok)
+        if result.ok:
+            return True
+        # Attach structured errors so datagen reject reports say what failed
+        # and how to fix it (same shape as eval sample_failures / serve 422).
+        row["_validation_errors"] = [
+            {
+                "layer": e.layer,
+                "code": e.code,
+                "message": e.message,
+                "location": e.location,
+                "hint": e.hint,
+            }
+            for e in result.errors
+        ]
+        return False
 
     return _fn
 

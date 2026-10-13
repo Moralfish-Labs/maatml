@@ -269,6 +269,7 @@ _MULTI_HEAD_KEYS = frozenset(
         "attn_implementation",
         "dataloader_workers",
         "model_revision",
+        "keep_checkpoints",
         "heads",
         "head_loss_weights",
         "embedding_strategy",
@@ -298,6 +299,7 @@ class MultiHeadConfig:
     attn_implementation: Optional[str] = None
     dataloader_workers: Optional[int] = None
     model_revision: Optional[str] = None
+    keep_checkpoints: int = 2
 
     @classmethod
     def from_dict(cls, d: dict) -> "MultiHeadConfig":
@@ -325,6 +327,7 @@ class MultiHeadConfig:
                 int(d["dataloader_workers"]) if d.get("dataloader_workers") is not None else None
             ),
             model_revision=d.get("model_revision"),
+            keep_checkpoints=int(d.get("keep_checkpoints", 2)),
         )
 
 
@@ -550,7 +553,7 @@ def _train_loop(
         eval_steps=cfg.eval_steps if run_eval else None,
         save_strategy="steps",
         save_steps=cfg.save_steps,
-        save_total_limit=2,
+        save_total_limit=cfg.keep_checkpoints,
         seed=cfg.seed,
         bf16=use_bf16,
         fp16=use_fp16,

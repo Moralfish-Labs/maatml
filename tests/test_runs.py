@@ -9,6 +9,7 @@ import pytest
 from maatml.config import ModelDefinition
 from maatml.runs import (
     finish_run,
+    get_run,
     latest_completed_run,
     list_runs,
     resolve_checkpoint,
@@ -149,3 +150,68 @@ def test_resume_skips_running_records_with_no_checkpoint(tmp_path: Path) -> None
     assert Path(stale.out_dir).exists()
     assert latest_incomplete_run(md).run_id == resumable.run_id
     assert resolve_resume_checkpoint(md, "auto") == Path(resumable.out_dir) / "checkpoint-10"
+
+
+def _orphan(tmp_path: Path, run_id: str, *, report: dict | None = None) -> ModelDefinition:
+    """A checkpoint on disk whose registry line never travelled with it."""
+    import json
+
+    md = _md(tmp_path)
+    out_dir = md.checkpoints_dir / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "run_metadata.json").write_text(
+        json.dumps(
+            {
+                "architecture": "causal_sft",
+                "identity": "run-test@0.1.0",
+                "created_at": "2026-08-13T09:51:27.171928+00:00",
+                "spec_hash": "abc123",
+                "extra": {"run_id": run_id, "device": "cuda", "profile": "cuda", "smoke": False},
+            }
+        )
+    )
+    if report is not None:
+        md.eval_dir.mkdir(parents=True, exist_ok=True)
+        (md.eval_dir / f"{run_id}.json").write_text(json.dumps(report))
+    return md
+
+
+def test_a_checkpoint_without_a_registry_line_is_adopted(tmp_path: Path) -> None:
+    md = _orphan(tmp_path, "20260813-082031-83f868")
+    rec = get_run(md, "20260813-082031-83f868")
+    assert rec is not None
+    assert rec.status == "completed"
+    assert rec.identity == "run-test@0.1.0"
+    assert rec.spec_hash == "abc123"
+    assert rec.device == "cuda"
+
+
+def test_an_adopted_run_carries_the_gate_result_its_report_recorded(tmp_path: Path) -> None:
+    # The manifest reads `gated` off the registry, so a run whose line was lost
+    # exports as never-gated unless the report is read back onto it.
+    md = _orphan(
+        tmp_path,
+        "20260813-082031-83f868",
+        report={
+            "gates": {"passed": True, "smoke": False, "results": {}},
+            "metrics": {"all_layers_pass_rate": 0.9216, "note": "text"},
+        },
+    )
+    rec = get_run(md, "20260813-082031-83f868")
+    assert rec is not None
+    assert rec.gates is not None and rec.gates["passed"] is True
+    assert rec.smoke_gated is False
+    assert rec.metrics == {"all_layers_pass_rate": 0.9216}
+
+
+def test_an_adopted_run_joins_the_registry_once(tmp_path: Path) -> None:
+    md = _orphan(tmp_path, "20260813-082031-83f868")
+    first = get_run(md, "20260813-082031-83f868")
+    second = get_run(md, "20260813-082031-83f868")
+    assert first is not None and second is not None
+    assert [r.run_id for r in list_runs(md)] == ["20260813-082031-83f868"]
+
+
+def test_an_unknown_run_id_stays_unknown(tmp_path: Path) -> None:
+    md = _md(tmp_path)
+    assert get_run(md, "20260813-000000-nosuch") is None

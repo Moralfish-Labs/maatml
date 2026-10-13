@@ -1,10 +1,10 @@
 # The data flywheel
 
-Training data is the scarce input, and a validator-gated model turns its own
-contract into a way to make more of it. Every source operation below is
-explicit, and every row it produces is gated by the same `evaluation.validator`
-that gates eval and serve, so a row that enters the corpus is a row the model is
-graded against.
+Each source operation changes the corpus explicitly. Configure
+`evaluation.validator` to check labels against the same contract used in
+evaluation and serving. `datagen` fails closed unless `--allow-ungated` is set;
+`ingest` validates only when a validator is configured. `mint` deliberately
+retains a failing completion as the rejected half of each preference pair.
 
 These are deliberate operations, not steps of `maatml run`. They change the seed
 corpus, and that is exactly what makes `prepare` stale on the next run:
@@ -15,6 +15,15 @@ datagen / ingest / distill / mint / (reviewed capture)
         ▼
 maatml run   # prepare is now stale, so the loop retrains
 ```
+
+## Policy-collected rows
+
+`maatml rollout --label` collects teacher labels at states reached by a
+checkpoint. The task's format plugin turns these episodes into training rows.
+`prepare_rows(..., train_rows=...)` adds them only to train and refuses groups
+already present in val or test. This keeps collected experience from silently
+moving the evaluation population. See [Rollouts](rollouts.md) for the protocol,
+teacher mixing and independently verified outcomes.
 
 ## `maatml datagen`: generate rows
 
@@ -37,8 +46,13 @@ Accepted rows carry provenance (teacher model and revision, prompt hash,
 source, family), and rejections are kept in a report. Teacher responses are
 recorded in a cache keyed on the prompt hash plus the teacher's model and
 revision, so `--replay` reproduces exactly the same accepted corpus with no
-network, and a different teacher never silently reuses another's labels. Point
-it at a pool with `--prompts`, or declare a `distill:` section in `model.yml`:
+network, and a different teacher never silently reuses another's labels. The
+cache opens with a provenance header (teacher, prompt pools by sha256, the
+benchmark version it was recorded against). A pool prompt that already sits
+in `benchmark_samples`, `blind_samples` or the prepared val / test split is
+refused before any teacher call: its label would enter training as a
+memorised answer to a question the benchmark asks. Point it at a pool with
+`--prompts`, or declare a `distill:` section in `model.yml`:
 
 ```yaml
 distill:
@@ -46,7 +60,22 @@ distill:
   teacher_model: gpt-4o-mini
   teacher_revision: "2026-07"
   cache: datasets/distill/cache.jsonl
+  system_prompt_file: datasets/distill/brief.txt   # instead of an inline system_prompt
+  target_format: text                              # json (default) parses; text does not
 ```
+
+The teacher is any OpenAI-compatible endpoint, named by
+`MAATML_TEACHER_BASE_URL` and `MAATML_TEACHER_API_KEY`, so serving one locally
+is a base URL rather than a code path.
+
+`target_format` decides what a reply must be *before* the validator sees it. The
+default `json` parses the response and drops what will not parse, which is right
+when the target is a document. Set `text` when it is not, such as a sentence and
+then a call object, or a rendered patch: the raw reply is handed to the
+validator to judge instead. Left at `json`, such a label is refused as unparseable and the
+gate that decides never sees it. `system_prompt_file` is for a briefing too long
+to sit inline in `model.yml`, such as one carrying a real system prompt and tool
+catalogue.
 
 The [triage example](examples/support-ticket-triage.md) ships a prompt pool and
 a recorded cache, so `maatml distill examples/support-ticket-triage --replay`
@@ -58,6 +87,16 @@ routing contract rejects it, so it never reaches the seeds.
 Maps external columns into the seed shape, optionally sanitizes, and validates
 gold targets when a validator is configured. It also guards the capture loop
 below: a `serve_capture` row is refused unless a reviewer approved it.
+
+`--video PATH` turns a sidecar JSONL plus a video file into image rows: each
+sidecar object names a frame (`frame`, `timestamp_ms`, or `t`) and the gold
+target; ffmpeg writes PNGs under `datasets/samples/images/` and the request
+field becomes that relative path. Annotation dialects (MEVA KPF, COCO VID)
+stay in the sidecar a plugin writes — core does not parse them.
+
+```bash
+maatml ingest <model> --input boxes.jsonl --video clip.mp4 --map expected=boxes
+```
 
 ## `maatml mint`: preference pairs for DPO / ORPO
 

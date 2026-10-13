@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Optional, Union
 
 
@@ -117,10 +118,17 @@ def is_main_process() -> bool:
 
 
 def resolve_device(device: str) -> Any:
-    """Map ``auto|mps|cpu|cuda|<torch device str>`` to a ``torch.device``."""
-    torch = _torch()
+    """Map ``auto|mps|cpu|cuda|<torch device str>`` to a ``torch.device``.
+
+    ``cpu`` is resolved without torch so a callable predictor can still run
+    the eval loop on a torch-free install.
+    """
     if device == "cpu":
-        return torch.device("cpu")
+        try:
+            return _torch().device("cpu")
+        except ImportError:
+            return SimpleNamespace(type="cpu")
+    torch = _torch()
     if device == "mps":
         return torch.device("mps")
     if device == "cuda":
@@ -173,13 +181,25 @@ def resolve_training_placement(
     return target, get_profile(target), False
 
 
-def resolve_load_dtype(profile: DeviceProfile, precision: str) -> Any | None:
+def resolve_load_dtype(
+    profile: DeviceProfile, precision: str, *, frozen_base: bool = False
+) -> Any | None:
     """``torch.dtype`` for ``from_pretrained``, or ``None`` (default / fp32).
 
     ``fp32_master`` (mps/cpu): keep default fp32 master weights.
     ``native`` (cuda): honour ``training.precision`` bf16/fp16.
+
+    ``frozen_base`` overrides the ``fp32_master`` policy, and only that policy.
+    Master weights are fp32 so optimizer updates stay stable, and a LoRA's base
+    takes no gradients and no optimizer state: there is nothing for the extra
+    precision to protect, and it is paid twice, once on the weights and again
+    on every activation that follows their dtype. On mps the cost is larger
+    than it looks, because autocast falls back to fp32 for many ops there.
+
+    The adapter is unaffected: PEFT creates its parameters in fp32 regardless
+    of the base dtype, so the trainable weights keep master precision.
     """
-    if profile.weights_dtype_policy != "native":
+    if profile.weights_dtype_policy != "native" and not frozen_base:
         return None
     torch = _torch()
     if precision == "bf16":

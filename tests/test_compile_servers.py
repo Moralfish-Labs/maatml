@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from maatml.compile import compile_export, parse_options
+from maatml.compile import compile_export, parse_options, promotion_status
 from maatml.registry import (
     COMPILERS,
     SERVERS,
@@ -81,6 +81,8 @@ def test_compiler_tensorrt_shaped(tmp_path: Path) -> None:
     assert target["compiler"] == "fake_tensorrt"
     assert target["source"]["identity"] == "toy@1"
     assert target["options"]["precision"] == "fp16"
+    assert target["promotion_eligible"] is True
+    assert target["promotion_reason"] == "production gate passed"
     assert "fake_tensorrt" in COMPILERS.names()
 
 
@@ -140,6 +142,54 @@ def test_unknown_compiler_raises(tmp_path: Path) -> None:
         compile_export(export, target="missing_compiler", out_dir=tmp_path / "x")
 
 
+def test_promotion_status_refuses_smoke_and_missing() -> None:
+    assert promotion_status({}) == (False, "manifest has no gate_evidence")
+    assert promotion_status({"gate_evidence": {}})[0] is False
+    ok, reason = promotion_status({"gate_evidence": {"passed": True, "smoke_gated": True}})
+    assert ok is False
+    assert "smoke-gated" in reason
+    ok, reason = promotion_status({"gate_evidence": {"passed": False}})
+    assert ok is False
+    assert "did not pass" in reason
+    assert promotion_status({"gate_evidence": {"passed": True}}) == (
+        True,
+        "production gate passed",
+    )
+
+
+def test_require_gated_refuses_before_the_plugin_runs(tmp_path: Path) -> None:
+    called = {"n": 0}
+
+    @register_compiler("gated_only")
+    def _cmp(export_dir: Path, out_dir: Path, *, manifest, options):
+        del export_dir, manifest, options
+        called["n"] += 1
+        return out_dir
+
+    export = _write_export(tmp_path)
+    manifest_path = export / "manifest.json"
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["gate_evidence"] = {"passed": True, "smoke_gated": True}
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="require-gated"):
+        compile_export(export, target="gated_only", out_dir=tmp_path / "nope", require_gated=True)
+    assert called["n"] == 0
+
+
+def test_require_gated_allows_a_production_pass(tmp_path: Path) -> None:
+    @register_compiler("gated_ok")
+    def _cmp(export_dir: Path, out_dir: Path, *, manifest, options):
+        del export_dir, manifest, options
+        (out_dir / "ok").write_text("1", encoding="utf-8")
+        return out_dir
+
+    export = _write_export(tmp_path)
+    out = tmp_path / "yes"
+    compile_export(export, target="gated_ok", out_dir=out, require_gated=True)
+    target = json.loads((out / "target_manifest.json").read_text(encoding="utf-8"))
+    assert target["promotion_eligible"] is True
+
+
 def test_server_dispatch_fake_backends() -> None:
     seen: dict[str, object] = {}
 
@@ -197,6 +247,34 @@ def test_lifecycle_server_verify_warmup_close() -> None:
     assert order == ["verify", "warmup", "serve", "close"]
     assert caps["modality"] == "vision"
     assert caps["execution_class"] == "continuous"
+
+
+def test_lifecycle_record_capture_uses_attached_writer() -> None:
+    seen: list[tuple[object, object, str]] = []
+
+    class _Writer:
+        def record(self, row, output, raw):
+            seen.append((row, output, raw))
+            return True
+
+    handle = LifecycleServer(
+        name="toy",
+        verify_fn=lambda: None,
+        warmup_fn=lambda: None,
+        serve_fn=lambda: None,
+        close_fn=lambda: None,
+        capture=_Writer(),
+    )
+    assert handle.record_capture({"image": "a.png"}, {"ok": True}, '{"ok":true}')
+    assert seen[0][0]["image"] == "a.png"
+    bare = LifecycleServer(
+        name="bare",
+        verify_fn=lambda: None,
+        warmup_fn=lambda: None,
+        serve_fn=lambda: None,
+        close_fn=lambda: None,
+    )
+    assert bare.record_capture({}, {}, "") is False
 
 
 def test_lifecycle_sigterm_closes_once(monkeypatch: pytest.MonkeyPatch) -> None:

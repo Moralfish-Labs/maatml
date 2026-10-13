@@ -8,7 +8,7 @@ Guidance for AI coding agents working in this repository.
 This file is for **contributors** working in a checkout.
 
 All commands assume the project venv (`.venv/bin/...`). Training needs the
-`[ml]` extra (torch, transformers, peft, tokenizers). CPU-free contributions
+`[ml]` extra (torch, transformers, peft, tokenizers). Torch-free contributions
 can use `pip install -e ".[dev]"`; unit tests run without torch.
 
 ```bash
@@ -23,9 +23,11 @@ pip install -e ".[dev,ml]"
 # pip install -e ".[dev,ml,vision]" # torchvision + ONNX for examples/vision
 # pip install -e ".[vllm]"          # Linux-only OpenAI-compatible VLM serving
 
+# Docs: pip install -e ".[docs]" then mkdocs build --strict
 # Test / lint (run from repo root)
 .venv/bin/python -m pytest tests/ examples/ -q
 ruff check src tests scripts examples
+ruff format --check src tests scripts examples
 mypy src/maatml --ignore-missing-imports
 
 # Per-model lifecycle (any standalone folder with model.yml)
@@ -40,16 +42,17 @@ mypy src/maatml --ignore-missing-imports
 .venv/bin/maatml sweep    examples/<name>/ --param training.learning_rate=1e-4,3e-4 --param training.lora.r=8,16 [--metric eval_loss] [--smoke] [--max-trials N]
 .venv/bin/maatml evaluate examples/<name>/ [--checkpoint X] [--split test|val] [--gate]
 .venv/bin/maatml export   examples/<name>/ [--checkpoint X] [--format safetensors|gguf|mlx|onnx] [--out PATH] [--parity]
-.venv/bin/maatml compile  <export-dir> --target NAME --out DIR [--option K=V]
+.venv/bin/maatml compile  <export-dir> --target NAME --out DIR [--option K=V] [--require-gated]
 .venv/bin/maatml verify   examples/<name>/output/export/<run_id>
 .venv/bin/maatml serve    examples/<name>/ [--server http|NAME] [--server-option K=V] [--enforce] [--max-retries N] [--auth-token T] [--capture PATH]
 .venv/bin/maatml datagen  examples/<name>/ [--target N] [--seed S] [--teacher] [--out PATH]
 .venv/bin/maatml distill  examples/<name>/ [--prompts PATH] [--replay] [--offline]
 .venv/bin/maatml mint     examples/<name>/ --input candidates.jsonl   # dpo/orpo pairs
-.venv/bin/maatml ingest   examples/<name>/ --input PATH [--map field=col] [--sanitize tag] [--append]
+.venv/bin/maatml ingest   examples/<name>/ --input PATH [--map field=col] [--sanitize tag] [--append] [--video FILE]
 .venv/bin/maatml runs     examples/<name>/ [--compare] [--metric K] [--limit N]
-.venv/bin/maatml doctor   [examples/<name>/] [--json]
+.venv/bin/maatml audit    [examples/<name>/] [--json]
 .venv/bin/maatml plugins
+.venv/bin/maatml rollout ~/models/my-policy --env line_world --tasks '{"count": 50, "seed": 1}' --label
 # Global: maatml --debug <command> prints tracebacks for user errors
 # (missing file, unparseable model.yml, unknown plugin), which otherwise
 # print a single line.
@@ -66,7 +69,9 @@ torchrun --nproc_per_node=N -m maatml.cli train examples/<name>/
 .venv/bin/python examples/vision-describer/scripts/build_seeds.py --target 400
 ```
 
-See also [ROADMAP.md](ROADMAP.md) for v0.4 product surface and later tranches.
+See [ROADMAP.md](ROADMAP.md) for the 0.14.0 release boundary and
+planned tranches. See [docs/orchestration.md](docs/orchestration.md)
+for worker and checkpoint ownership; external orchestration stays outside core.
 
 ## Architecture
 

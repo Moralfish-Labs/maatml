@@ -221,3 +221,65 @@ def test_ingest_capture_stripped_of_approval_is_still_refused(tmp_path: Path) ->
     result = ingest_samples(md, inp, append=False)
     assert result["unapproved_capture"] == 1
     assert result["accepted"] == 0
+
+
+def test_ingest_video_extracts_frames_and_sets_image_field(tmp_path: Path) -> None:
+    from maatml.data.ingest import ingest_samples
+
+    model_dir = tmp_path / "model"
+    (model_dir / "datasets" / "samples").mkdir(parents=True)
+    md = ModelDefinition(
+        name="toy",
+        model_id="toy",
+        architecture="causal_sft",
+        dataset={
+            "seed_samples": "datasets/samples/seed_samples.jsonl",
+            "request_field": "image",
+            "target_field": "expected",
+        },
+    )
+    object.__setattr__(md, "model_dir", model_dir)
+
+    sidecar = tmp_path / "boxes.jsonl"
+    write_jsonl(
+        sidecar,
+        [
+            {"frame": 3, "expected": {"detections": []}},
+            {"timestamp_ms": 1000, "expected": {"detections": [{"label": "person"}]}},
+        ],
+    )
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not-a-real-video")
+
+    extracted: list[int] = []
+
+    def _fake_extract(src, dest, *, frame):
+        del src
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"png")
+        extracted.append(int(frame))
+        return Path(dest)
+
+    from maatml.data import video as video_mod
+
+    original = video_mod.extract_video_frame
+    video_mod.extract_video_frame = _fake_extract
+    try:
+        result = ingest_samples(md, sidecar, video=video, append=False)
+    finally:
+        video_mod.extract_video_frame = original
+
+    assert result["accepted"] == 2
+    assert extracted == [3, 30]  # 1000 ms at default 30 fps
+    rows = list(iter_jsonl(md.resolve("datasets/samples/seed_samples.jsonl")))
+    assert rows[0]["image"] == "datasets/samples/images/clip-f000003.png"
+    assert rows[0]["family"] == "clip"
+    assert (model_dir / "datasets" / "samples" / "images" / "clip-f000003.png").is_file()
+
+
+def test_resolve_frame_index_requires_a_time_field() -> None:
+    from maatml.data.video import resolve_frame_index
+
+    with pytest.raises(ValueError, match="frame"):
+        resolve_frame_index({"expected": {}})
+    assert resolve_frame_index({"t": 2.0}, fps=10) == 20

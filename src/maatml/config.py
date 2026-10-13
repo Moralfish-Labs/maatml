@@ -31,6 +31,7 @@ _PATH_KEYS = frozenset(
         "contracts",
         "tokenizer",
         "template_dir",
+        "attribution",
     }
 )
 
@@ -265,9 +266,32 @@ _DATASET_KNOWN_KEYS = frozenset(
         "template_dir",
         "sources",
         "base_model_name_or_path",
+        # image_caption_folder (diffusion corpora)
+        "source_dir",
+        "val_fraction",
+        "test_fraction",
+        # populations
+        "isolation",
+        "pins",
+        "blind_samples",
+        "attribution",
+        "attribution_field",
     }
 )
-_EVALUATION_KNOWN_KEYS = frozenset({"predictor", "validator", "metrics", "gates", "repair_braces"})
+_EVALUATION_KNOWN_KEYS = frozenset(
+    {
+        "predictor",
+        "validator",
+        "metrics",
+        "gates",
+        "gates_benchmark",
+        "operating_point",
+        "repair_braces",
+        "slices",
+        "cache_predictions",
+        "batch_size",
+    }
+)
 
 
 def config_key_warnings(md: ModelDefinition) -> list[str]:
@@ -277,7 +301,10 @@ def config_key_warnings(md: ModelDefinition) -> list[str]:
         if key not in _DATASET_KNOWN_KEYS:
             warns.append(f"dataset.{key}: unrecognized key, ignored by known stages")
     ev = md.evaluation if isinstance(md.evaluation, dict) else {}
+    # The key operating-point derive writes is whatever threshold_key names.
+    op = ev.get("operating_point")
+    threshold_key = op.get("threshold_key") if isinstance(op, dict) else None
     for key in ev:
-        if key not in _EVALUATION_KNOWN_KEYS:
+        if key not in _EVALUATION_KNOWN_KEYS and key != threshold_key:
             warns.append(f"evaluation.{key}: unrecognized key, ignored by known stages")
     return warns

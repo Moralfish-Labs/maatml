@@ -71,6 +71,9 @@ def ingest_samples(
     sanitize_tag: Optional[str] = None,
     append: bool = True,
     out_path: Optional[str | Path] = None,
+    video: Optional[str | Path] = None,
+    images_rel: str = "datasets/samples/images",
+    fps: Optional[float] = None,
 ) -> dict[str, Any]:
     """Ingest rows into ``seed_samples``, validating gold targets when configured.
 
@@ -96,6 +99,17 @@ def ingest_samples(
         if not any(src in r for r in rows_in):
             raise ValueError(f"--map {dest}={src}: source column {src!r} matches zero input rows")
     mapped = [_apply_field_map(r, fmap) for r in rows_in]
+    if video is not None:
+        from .video import materialize_video_rows
+
+        mapped = materialize_video_rows(
+            mapped,
+            video,
+            images_dir=model_def.resolve(images_rel),
+            images_rel=images_rel,
+            request_field=request_field,
+            fps=fps,
+        )
 
     sanitizer = None
     if sanitize_tag:

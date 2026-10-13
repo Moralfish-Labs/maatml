@@ -36,7 +36,7 @@ def _isolate_registries():
     finally:
         restore_registries(snapshot)
         # Recorded plugin failures are process-global too: a test that provokes
-        # one must not leave `maatml doctor` reporting it forever after.
+        # one must not leave `maatml audit` reporting it forever after.
         restore_load_errors(errors)
         # A model folder's plugins register through import side effects, and
         # load_model_plugins skips a module already in sys.modules. Rolling the

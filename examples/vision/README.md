@@ -6,7 +6,9 @@ One MobileNetV3-Large checkpoint that jointly predicts:
 - **object detection** (colored shapes, CenterNet-style, NMS-free ONNX)
 - **pose** estimation (single stick figure, 12 keypoints)
 
-Trained on deterministic synthetic scenes (PIL), fully offline, no Hub downloads.
+Scene generation is deterministic and offline. Full training uses a pretrained
+MobileNet backbone and may download its weights on first use; the smoke
+configuration disables pretrained weights.
 Deploy with `maatml export --format onnx` and `maatml serve`.
 
 ## Output shape
@@ -40,11 +42,14 @@ examples/vision/
 
 ## Lifecycle
 
+Run these commands from the repository root in an activated virtual
+environment. The editable install matches the example to this source revision.
+
 ```bash
 # Install (once)
-pip install -e ".[dev,ml,vision]"
+pip install -e ".[ml,vision]"
 
-# Optional: grow the corpus (starter 16-row set is committed)
+# Generate the images and matching rows before preparing (images are not tracked)
 python examples/vision/scripts/build_seeds.py --target 2000
 # or: maatml datagen examples/vision --target 500
 
@@ -99,4 +104,44 @@ subset via ingest rather than streaming 20 GB in core.
 | `pck_0_2` | >= 0.33 | pose PCK @ 0.2 x person diagonal |
 | `scene_accuracy` | >= 0.97 | background-style classification |
 
-Raise the gates after a longer train on a larger corpus (`--target 2000`).
+The table reflects the configured example gates, not a fresh measurement.
+After changing the corpus, evaluate an explicit run and derive supported
+floors with `maatml gates derive`; retain the report and population hash.
+
+## Validator (`vision_scene`)
+
+The out-of-model contract is a 4-layer gate. Eval, serve (`?validate=1` /
+`--enforce`), and datagen all call the same function. Failures carry
+`layer` / `code` / `location` / `message` / `hint`, and show up in:
+
+- `output/eval/<run>.json` → `sample_failures` (and the markdown summary)
+- `serve --enforce` → HTTP 422 payload (and retry feedback when `--max-retries` > 0)
+- `*.datagen_rejected.jsonl` → `_validation_errors` on each rejected row
+
+| Layer | What it checks |
+|---|---|
+| 1 | JSON parse; root must be an object |
+| 2 | JSON Schema (`datasets/schema.json`) when declared |
+| 3 | Required shapes: `scene.label`, `detections[].{label,box}`, `pose.keypoints` |
+| 4 | Enum membership: scene labels, shape labels, the 12 keypoint names |
+
+### Error codes
+
+| Code | Layer | Meaning | Fix |
+|---|---|---|---|
+| `invalid_json` | 1 | output is not parseable JSON | return bare JSON (no fences / trailing commas) |
+| `not_object` | 1 | root is an array or scalar | wrap as `{scene, detections, pose}` |
+| `schema` | 2 | fails `datasets/schema.json` | match required keys and field types |
+| `scene_shape` | 3 | `scene` missing or has no `label` | set `scene: {label, confidence?}` |
+| `detections_shape` | 3 | `detections` is not a list | set `detections` to a JSON array |
+| `detection_item` | 3 | one detection is not `{label, box}` | fix the indexed item |
+| `box_shape` | 3 | `box` is not `[x1,y1,x2,y2]` | four normalized floats in `[0,1]` |
+| `pose_shape` | 3 | `pose.keypoints` missing or not a list | set `pose: {keypoints: [...]}` |
+| `scene_label` | 4 | unknown scene label | one of `plain/gradient/striped/noisy/checker` |
+| `shape_label` | 4 | unknown detection label | one of `circle/square/triangle/star` |
+| `keypoints_missing` | 4 | not all 12 keypoint names present | include every name from `KEYPOINT_NAMES` |
+
+`all_layers_pass_rate` is the validator verdict (every required layer passed).
+`scene_accuracy`, `map_50`, and `pck_0_2` come from the metrics plugin and
+compare predictions against gold — a row can pass the validator and still
+lose on accuracy.

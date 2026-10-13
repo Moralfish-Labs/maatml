@@ -1,19 +1,25 @@
-# Get started in 5 minutes
+# Get started
 
 The fastest path from a clean checkout to a served model uses
 [support-ticket-triage](examples/support-ticket-triage.md): a LoRA fine-tune of
 Qwen3-0.6B that turns a raw support ticket into `{priority, category, team,
-summary}` JSON. Everything below runs on CPU.
+summary}` JSON. Runtime depends on downloads and hardware; full training is
+best run on a GPU. Use the smoke tier to check the pipeline first.
 
 ## 1. Install
 
 ```bash
-git clone https://github.com/moralfish/maatml.git
+git clone https://github.com/Moralfish-Labs/maatml.git
 cd maatml
 python -m venv .venv
 source .venv/bin/activate
-pip install "maatml[ml]"
+pip install -e ".[ml]"
 ```
+
+This walkthrough installs the checkout so its examples and framework agree.
+For a released installation with your own model folder, use
+`pip install "maatml[ml]"` instead. Use 0.14.0 or later for rollouts and tool-call chat training.
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
 
 `[ml]` pulls in the training stack (`torch`, `transformers`, `peft`, …). If you
 only need the CLI and library, no training, `pip install maatml` is enough.
@@ -21,6 +27,8 @@ only need the CLI and library, no training, `pip install maatml` is enough.
 ## 2. Build the train / val / test splits
 
 ```bash
+maatml --version
+maatml validate examples/support-ticket-triage/
 maatml prepare examples/support-ticket-triage/
 ```
 
@@ -66,12 +74,24 @@ same check you'd wire into CI. Drop `--gate` to see the scores on their own.
 
 A red gate is the contract working, not a broken quickstart: it says this
 checkpoint has not earned the threshold yet. Train longer, grow the corpus
-(`maatml datagen` or `maatml ingest`), or decide the threshold was wrong and
-change it deliberately. The thresholds shipped with this example are marked
+(`maatml datagen` or `maatml ingest`), and inspect failures by metric and population before changing the recipe. The thresholds shipped with this example are marked
 pending re-measurement in `model.yml`, so treat them as a starting point rather
-than a target to tune against.
+than a target to tune against. When you have a run you trust, let
+`maatml gates derive <model-dir> --run RUN --write` set them from its report
+instead of typing numbers (see [Evidence](evidence.md)).
 
-## 6. Serve it
+## 6. Export and verify
+
+```bash
+maatml export examples/support-ticket-triage/ --format safetensors
+maatml verify examples/support-ticket-triage/output/export/RUN_ID
+```
+
+Replace `RUN_ID` with the export directory reported by the command. Verification
+checks file integrity; it does not establish model quality. Use explicit
+`--checkpoint RUN_ID` on evaluate, export and serve when comparing several runs.
+
+## 7. Serve it
 
 ```bash
 maatml serve examples/support-ticket-triage/
@@ -88,16 +108,27 @@ curl -s localhost:8080/predict \
 Add `?validate=1` to the URL to also run the task's validator inline on the
 response.
 
+## Run the fixed pipeline
+
+Once the individual stages are familiar, `maatml run examples/support-ticket-triage/`
+walks prepare, train, gated evaluate, export and verify, skipping fresh stages.
+`maatml run examples/support-ticket-triage/ --smoke` uses the example's smoke
+gates to check that pipeline. Serving is started separately.
+
 ## What just happened
 
-One `model.yml` drove every stage above (prepare, train, evaluate, serve) through the same CLI. See [the validator-gated lifecycle](lifecycle.md) for why
+One `model.yml` drove every stage above (prepare, train, evaluate, export, verify, serve) through the same CLI. See [the validator-gated lifecycle](lifecycle.md) for why
 that matters, and the [plugin author guide](plugins.md) for how to point this
 at your own task instead of support-ticket triage.
 
 ## Next steps
 
-- Browse the [other five examples](examples/index.md): vision, a
-  vLLM-servable vision-language model, and two mainframe-log models share this
+- When a command misbehaves, start with
+  `maatml audit examples/support-ticket-triage/` (add `--json` for machines).
+  It reports missing extras, device/profile mismatches, unregistered plugins,
+  empty seeds, and gate-key typos without running training.
+- Browse the [other examples](examples/index.md): vision, a
+  vLLM-servable vision-language model, and a seq2seq describer share this
   same folder layout.
 - Scaffold your own task:
   `maatml scaffold ~/models/my-task --architecture causal_sft --name my-task`.

@@ -615,3 +615,25 @@ def test_capture_applies_declared_sanitizers(tmp_path: Path) -> None:
     row = json.loads((tmp_path / "cap.jsonl").read_text().splitlines()[0])
     assert row["request"] == "job for USER=REDACT"
     assert "ALICE" not in json.dumps(row)
+
+
+def test_open_capture_requires_auth_and_writes_serve_capture_rows(tmp_path: Path) -> None:
+    from maatml.config import ModelDefinition
+    from maatml.serve import open_capture
+
+    md = ModelDefinition(
+        name="toy",
+        model_id="toy",
+        architecture="causal_sft",
+        dataset={"request_field": "image"},
+    )
+    object.__setattr__(md, "model_dir", tmp_path)
+    with pytest.raises(ValueError, match="auth-token"):
+        open_capture(md, tmp_path / "cap.jsonl", auth_token=None)
+    writer = open_capture(md, tmp_path / "cap.jsonl", auth_token="secret")
+    assert writer is not None
+    writer.record({"image": "cam.png"}, {"detections": []}, '{"detections":[]}')
+    row = json.loads((tmp_path / "cap.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert row["source"] == "serve_capture"
+    assert row["approved"] is False
+    assert row["image"] == "cam.png"

@@ -126,6 +126,36 @@ class CaptureWriter:
             return True
 
 
+def open_capture(
+    model_def: Any,
+    capture_path: str | Path | None,
+    *,
+    auth_token: Optional[str] = None,
+) -> CaptureWriter | None:
+    """Build a ``CaptureWriter`` for any server backend (HTTP, UDS, …).
+
+    Same rules as ``http``: capture requires a non-empty auth token. Returns
+    ``None`` when ``capture_path`` is omitted. Custom servers should call this
+    and then ``writer.record(row, output, raw)`` (or
+    ``LifecycleServer.record_capture``) so ingest sees the same
+    ``source: serve_capture`` / ``approved: false`` rows.
+    """
+    if capture_path is None:
+        return None
+    _reject_empty_token(auth_token)
+    if not auth_token:
+        raise ValueError(
+            "serve --capture requires --auth-token (or MAATML_SERVE_TOKEN): "
+            "captured rows are unreviewed writes and must not be open to "
+            "anonymous clients."
+        )
+    cfg = get_dataset_cfg(model_def)
+    request_field = str(cfg.get("request_field") or cfg.get("raw_field") or "request")
+    sanitize_tags = [str(tag).strip() for tag in (cfg.get("sanitize") or []) if str(tag).strip()]
+    sanitizers = [SANITIZERS.require(tag) for tag in sanitize_tags]
+    return CaptureWriter(Path(capture_path), request_field=request_field, sanitizers=sanitizers)
+
+
 def _reject_empty_token(auth_token: Optional[str]) -> None:
     """Refuse an empty auth token rather than serving formality-only auth.
 
@@ -326,29 +356,7 @@ def build_serve_context(
             "tell a retry succeeded without a validator to re-check the output."
         )
 
-    capture = None
-    if capture_path is not None:
-        # Capture writes model output that is not yet reviewed, so it is gated
-        # behind the auth token: an open capture endpoint is an unbounded write
-        # sink and a way to poison the corpus.
-        if not auth_token:
-            raise ValueError(
-                "serve --capture requires --auth-token (or MAATML_SERVE_TOKEN): "
-                "captured rows are unreviewed writes and must not be open to "
-                "anonymous clients."
-            )
-        cfg = get_dataset_cfg(model_def)
-        request_field = cfg.get("request_field") or cfg.get("raw_field") or "request"
-        # Honour the model's declared sanitizers on the way in. Capture writes
-        # live client traffic to disk, so domain-specific PII must be removed
-        # before an unreviewed row reaches the corpus.
-        sanitize_tags = [
-            str(tag).strip() for tag in (cfg.get("sanitize") or []) if str(tag).strip()
-        ]
-        sanitizers = [SANITIZERS.require(tag) for tag in sanitize_tags]
-        capture = CaptureWriter(
-            Path(capture_path), request_field=request_field, sanitizers=sanitizers
-        )
+    capture = open_capture(model_def, capture_path, auth_token=auth_token)
 
     return ServeContext(
         model_def=model_def,
@@ -387,6 +395,7 @@ def _validation_payload(result: ValidationResult) -> dict[str, Any]:
                 "code": e.code,
                 "message": e.message,
                 "location": e.location,
+                "hint": e.hint,
             }
             for e in result.errors
         ],
@@ -422,7 +431,13 @@ def _feedback_row(
     appends it as a user turn); a predictor that ignores the key simply re-runs
     unchanged, which is a harmless no-op rather than an error.
     """
-    errors = "; ".join(f"{e.code}: {e.message}" for e in result.errors) or "invalid output"
+    parts: list[str] = []
+    for e in result.errors:
+        part = f"{e.code}: {e.message}"
+        if e.hint:
+            part = f"{part} ({e.hint})"
+        parts.append(part)
+    errors = "; ".join(parts) or "invalid output"
     retry = dict(row)
     retry["_validation_feedback"] = (
         f"The previous response failed validation ({errors}). "

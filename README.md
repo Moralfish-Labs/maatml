@@ -1,14 +1,14 @@
-# maatml
+# MaatML
 
 [![PyPI](https://img.shields.io/pypi/v/maatml.svg)](https://pypi.org/project/maatml/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](pyproject.toml)
-[![CI](https://github.com/moralfish/maatml/actions/workflows/ci.yml/badge.svg)](https://github.com/moralfish/maatml/actions/workflows/ci.yml)
+[![CI](https://github.com/Moralfish-Labs/maatml/actions/workflows/ci.yml/badge.svg)](https://github.com/Moralfish-Labs/maatml/actions/workflows/ci.yml)
 
-**MaatML** fine-tunes small, task-specific models across **text, vision, and
-vision-language**, and takes them from experimentation to production through a
-single declarative `model.yml`: **prepare → train → evaluate → export → serve**.
-Licensed under **Apache-2.0**.
+**MaatML** is where a small, task-specific model is built, weighed, and
+packaged, across **text, vision, and vision-language**. One declarative
+`model.yml` drives **prepare → train → evaluate → export → serve**. The runtime
+is where the model answers. Licensed under **Apache-2.0**.
 
 **What makes it different:** correctness is checked *outside* the model by
 **validators**. The same validator gates your synthetic **data** and your
@@ -20,8 +20,22 @@ now across modalities, is what general fine-tuning tools leave out.
 
 Site: [maatml.pages.dev](https://maatml.pages.dev) ·
 PyPI: [`maatml`](https://pypi.org/project/maatml/) ·
-Source: [github.com/moralfish/maatml](https://github.com/moralfish/maatml)
+Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maatml)
 
+## Implementation and release status
+
+The package version is **0.14.0**. This release includes rollout/DAgger
+collection, train-only dataset rows, tool-call chat training and multi-turn
+masking fixes. Upgrade older installations to use these features; see
+[CHANGELOG.md](CHANGELOG.md) for release notes and [ROADMAP.md](ROADMAP.md)
+for remaining work.
+
+MaatML owns the model lifecycle and its evidence. Model folders own task
+contracts and recipes; an external orchestrator owns remote machines,
+scheduling, storage transfers, monitoring, and recovery policy. The
+[orchestration guide](docs/orchestration.md) describes how to keep those
+responsibilities separate while carrying checkpoints and run records between
+machines.
 
 ## Installation
 
@@ -41,7 +55,7 @@ pip install "maatml[ml,pref]"    # DPO / ORPO (TRL)
 pip install "maatml[ml,vision]"  # torchvision + ONNX (examples/vision)
 pip install "maatml[vllm]"       # Linux-only vLLM serving (examples/vision-vlm)
 pip install "maatml[teacher]"    # OpenAI-compatible teacher for datagen
-pip install "maatml[docs]"       # mkdocs site
+pip install "maatml[docs]"       # site tooling; also requires a source checkout
 ```
 
 Then:
@@ -85,17 +99,20 @@ laptop and deploy to the edge or vLLM.
   verify` / `serve`), as one command: `maatml run`, which skips steps that are
   already fresh and stops non-zero at the first failure. It is **not** a
   general-purpose workflow scheduler: no triggers, no arbitrary shell/Python
-  steps, no remote executors. Drop `maatml train` into MLflow / Prefect /
-  Metaflow when you need that.
+  steps, no remote executors. An external orchestrator can invoke its CLI on
+  local machines, notebook GPUs, or GPU VMs; see
+  [orchestration and recovery](docs/orchestration.md).
 - **Its niche:** local-first, multimodal, structured-output models with
   correctness gated *outside* the model, from data generation through serving.
 
 ## Requirements
 
 - **Python** 3.10+ (developed against 3.13)
-- **OS** macOS, Linux (Windows untested)
-- **Disk / memory** ~3 GB for the ML stack; 16 GB unified memory is the design
-  target for local training
+- **OS** macOS and Linux; Windows has a torch-free CLI/test CI job, not a
+  demonstrated GPU training path
+- **Disk / memory** depend on the selected extras, base model, context length
+  and batch size. Reserve space for downloads, checkpoints and exports; use
+  a smoke run to check the recipe on your hardware.
 
 ## CLI overview
 
@@ -108,21 +125,28 @@ line; `maatml --debug <command>` prints the traceback.
 | Command | What it does |
 | --- | --- |
 | `run` | The whole lifecycle in one command: prepare, train, evaluate (gated), export, verify. Skips steps that are already fresh |
-| `prepare` | Build `train`/`val`/`test` splits from the seed corpus |
-| `train` | Fine-tune the model (`--smoke`, `--resume auto\|PATH`, `--set K=V`) |
+| `prepare` | Build `train`/`val`/`test` splits from the seed corpus; enforces `dataset.isolation` / `pins`, records the benchmark version and the corpus lock, checks source sign-offs when `dataset.attribution` is declared |
+| `train` | Fine-tune the model (`--smoke`, `--resume auto\|PATH`, `--set K=V`, `--seeds N`); `training.select_by` picks the checkpoint on val |
 | `sweep` | Offline grid HPO over `--param K=a,b` |
-| `evaluate` | Score a checkpoint; `--gate` exits non-zero on a gate miss. The token budget defaults to `packaging.max_input_tokens` |
+| `evaluate` | Score a checkpoint; `--gate` exits non-zero on a gate miss, `--cache` keeps per-row predictions, `--batch-size N` feeds a predictor's `predict_batch` in chunks, `--set K=V` overrides model.yml for that evaluate (recorded, never with `--gate`), `--blind` spends the blind manifest once, `--strict-population` refuses floors from another split. The token budget defaults to `packaging.max_input_tokens` |
+| `gates derive` | Floors from a run's report: Wilson 95 % at each metric's own denominator, cluster bootstrap from a cache, `--seed-study`; `--write` rewrites `evaluation.gates` with the derivation beside each floor |
+| `ship-check` | `CANDIDATE BASELINE`: absolute, delta and population verdict in one; `--replay` re-evaluates both over the current test split |
+| `operating-point derive` | Sweep the predictor's `rescore` over a val cache under a budget; `--write` the cut, `--confirm-on-test` spends test once |
 | `export` | Deployable bundle + `manifest.json` (`--format`, `--parity`) |
+| `compile` | Dispatch an export to a registered target compiler; `--require-gated` rejects missing, failed or smoke-tier gate evidence |
+| `manifest amend` | Add files inside an export to its checksummed manifest without changing gate evidence |
 | `verify` | Recompute sha256 of an export against its `manifest.json` |
 | `serve` | JSON inference API; `--enforce` (422), `--max-retries`, `--auth-token`, `--capture` |
 | `datagen` | Validator-gated seed generation (`--teacher`, `--allow-ungated`) |
 | `distill` | Validator-gated teacher labels over a prompt pool (`--replay` offline) |
 | `mint` | Preference pairs (`chosen`/`rejected`) from validator-scored candidates |
 | `ingest` | Import external samples (`--map field=col`, `--sanitize tag`) |
-| `runs` | List recorded training runs (`--compare` tabulates their metrics) |
+| `runs` | List recorded training runs (`--compare` tabulates their metrics); `--pack RUN` / `--adopt BUNDLE` carry a run, its evidence and its record between machines |
+| `report` | Runs, floors with their derivation, slices, pathologies, seed statistics and spends, regenerated from `output/` alone (`--format md\|csv`) |
 | `plan` | Show which lifecycle steps are stale (alias for `run --dry-run`) |
-| `plugins` | List discovered trainers, validators, and metrics |
-| `doctor` | Check the environment, plugins, and a model folder; exits 1 on problems |
+| `plugins` | List registered trainers, validators, metrics, formats, generators, exporters, compilers, servers and environments |
+| `audit` | Check the environment, plugins, and a model folder; exits 1 on problems |
+| `rollout` | Run a checkpoint in a verifying environment; `--label` collects teacher labels for DAgger, and `--teacher-mix` mixes teacher decisions |
 | `scaffold` | Create a new model folder (`--architecture`, `--plugin`, `--force`) |
 | `validate` | Check `model.yml` and paths (`--no-plugins` skips plugin code) |
 
@@ -137,8 +161,14 @@ Export defaults to a safetensors bundle + `manifest.json`. GGUF/MLX need
 external tooling (`llama.cpp` convert / `mlx_lm`). Pin base-model revisions
 with `training.model_revision`.
 
+The causal SFT path also preserves per-row tool definitions,
+assistant tool calls and tool results. It supervises every assistant turn and
+masks the other roles; see [tool-call chat training](docs/lifecycle.md#tool-call-chat-training).
+
 Docs: [maatml.pages.dev](https://maatml.pages.dev) · Roadmap: [ROADMAP.md](ROADMAP.md) ·
-In-repo docs: `docs/` (`pip install "maatml[docs]"` then `mkdocs serve`).
+In-repo docs: `docs/` (from the repository root, `pip install -e ".[docs]"`
+then `mkdocs serve`). See the [CLI reference](docs/cli.md) and
+[configuration reference](docs/skill/references/model-yml.md).
 
 ## End-to-end example (Support Ticket Triage)
 
@@ -149,9 +179,9 @@ the model. Every reference model now registers a validator and declares
 `evaluation.gates`.
 
 ```bash
-git clone https://github.com/moralfish/maatml.git
+git clone https://github.com/Moralfish-Labs/maatml.git
 cd maatml
-pip install "maatml[ml]"
+pip install -e ".[ml]"   # match the framework to the checked-out examples
 
 maatml prepare  examples/support-ticket-triage/
 maatml train    examples/support-ticket-triage/ --smoke   # fast pipeline check
@@ -162,6 +192,26 @@ maatml serve    examples/support-ticket-triage/           # JSON inference API
 
 For a **multimodal** walkthrough (image → description, servable by vLLM) see
 [examples/vision-vlm/](examples/vision-vlm/).
+
+## From a passed gate to a claim
+
+A green `evaluate --gate` is the start of the evidence, not the end of it.
+The same CLI derives the floors, chooses the operating point, names the
+populations, and carries the run home:
+
+```bash
+maatml gates derive <model-dir> --run RUN --write      # Wilson floors, derivation beside each
+maatml operating-point derive <model-dir> --run RUN --write --confirm-on-test
+maatml ship-check <model-dir> CANDIDATE BASELINE        # absolute + delta + population
+maatml evaluate <model-dir> --blind                     # once per frozen candidate
+maatml runs <model-dir> --pack RUN                      # → --adopt on the machine that exports
+maatml report <model-dir>                               # everything above, from the records alone
+```
+
+`model.yml` declares the rest: `dataset.isolation` / `pins` / `blind_samples`
+for populations, `dataset.attribution` for the licence table every source
+must be signed in, `training.select_by` for checkpoint selection on val.
+[docs/evidence.md](docs/evidence.md) walks through it.
 
 ## Batch scripts
 
@@ -181,8 +231,8 @@ python scripts/evaluate_all.py
 ## Apple Silicon / MPS notes
 
 - Default precision is **bf16** autocast with fp32 master weights.
-- Trainers set `eval_steps: 9999` to disable mid-training eval on MPS (unified
-  memory does not release val-set tensors between eval and training).
+- The MPS device profile disables mid-training evaluation; setting
+  `eval_steps` does not override that profile.
 - `grad_checkpointing` defaults to `false`; `dataloader_num_workers=0`
   everywhere (multi-worker + MPS can deadlock via fork pickling).
 - `PYTORCH_ENABLE_MPS_FALLBACK=1` is set by the CLI for unsupported ops.

@@ -64,7 +64,8 @@ See `model.yml` `training:` / `smoke:`.
 
 ## 11. Environment
 
-`pip install -e ".[dev,ml]"`. No vision extra required for this example.
+From the repository root in an activated virtual environment, run
+`pip install -e ".[ml]"`. No vision extra is required for this example.
 
 ## 12. Tokenizer
 
@@ -99,10 +100,10 @@ for seq2seq).
 
 ## 18. Versioning
 
-Semver in `model.yml` (`0.1.0`). Bump on schema or caption-template changes;
+Use the current SemVer in `model.yml`. Bump on schema or caption-template changes;
 re-run `build_seeds.py`.
 
-## 19. First milestone checklist
+## 19. Validation checklist
 
 - [ ] `maatml validate examples/vision-describer`
 - [ ] `maatml prepare` + `train --smoke`

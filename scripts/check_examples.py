@@ -119,9 +119,17 @@ def check(model_dir: Path) -> list[str]:
 
 
 def _readme_gate_table(readme: str) -> dict[str, float]:
-    """Parse the `| \\`metric\\` | >= X |` rows of a README quality-gates table."""
+    """Parse the `| \\`metric\\` | >= X |` rows of a README quality-gates table.
+
+    Only rows that use the ``>=`` threshold form count as gates. Other tables
+    that happen to put a backtick name next to a number (validator error codes
+    with a layer column, for example) must not be mistaken for gate claims.
+    """
     found: dict[str, float] = {}
-    for match in re.finditer(r"\|\s*`([a-z0-9_]+)`\s*\|[^0-9|]*([0-9.]+)\s*\|", readme):
+    for match in re.finditer(
+        r"\|\s*`([a-z0-9_]+)`\s*\|\s*>=\s*([0-9.]+)\s*\|",
+        readme,
+    ):
         found[match.group(1)] = float(match.group(2))
     return found
 

@@ -1,25 +1,34 @@
 # Serving & deployment
 
-A trained MaatML model has three deployment paths, from lightweight-local to
-production throughput. All of them serve the *same* exported checkpoint, and all
-can re-apply the model's [validator](lifecycle.md).
+Deployment depends on the architecture and installed backend. The built-in
+HTTP server loads a model-folder predictor; the Anthropic proxy forwards to
+an external runtime. ONNX and vLLM consume compatible exports. A direct
+external runtime does not automatically apply MaatML validators.
 
 Serving and target compilation are pluggable: `maatml serve --server NAME` and
 `maatml compile --target NAME` dispatch through the `server` / `compiler`
 registries. The built-in `http` server stays the default for development; native
-backends (DeepStream/TensorRT, vLLM, llama.cpp, …) register as plugins and keep
-their hot path in the native engine.
+backends can register as plugins and keep their hot path in the native engine.
+`http` and `anthropic` are bundled servers. The `sip_tensorrt` compiler and
+`sip_deepstream` server below are illustrative external plugin names; install
+and register those plugins before using them. `maatml plugins` lists available
+registrations.
 
 ## 0. Target compilation
 
 ```bash
 maatml compile <export-dir> --target sip_tensorrt --out /opt/sip/models/person \
-    --option precision=fp16 --option profile=4cam
+    --option precision=fp16 --option profile=4cam --require-gated
 ```
 
 Compilers receive the portable export (ONNX, GGUF, HF, …) and write a
 device-specific bundle plus `target_manifest.json` (source identity, options,
-gate evidence pointer). Core never assumes ONNX.
+`promotion_eligible` / `promotion_reason` from `manifest.gate_evidence`). Core
+never assumes ONNX.
+
+`--require-gated` refuses before the plugin runs when `gate_evidence` is
+missing, `passed` is not true, or `smoke_gated` is true, so a rehearsal cannot
+become a device artifact.
 
 ## 1. `maatml serve`, built-in HTTP API
 
@@ -90,6 +99,11 @@ captured row is **not** gold: it carries `approved: false` / `needs_review:
 true`, and the file is row/byte capped so an unattended server cannot fill the
 disk. Capture requires `--auth-token`.
 
+Custom servers (`--server sip_deepstream`, …) use the same writer:
+`maatml.serve.open_capture(model_def, capture_path, auth_token=…)` then
+`LifecycleServer.record_capture(row, output, raw)` (or `writer.record`). The
+CLI still passes `--capture` and `--auth-token` through `dispatch_server`.
+
 The request is written through the model's declared `dataset.sanitize` tags, so
 a model that sanitizes its corpus sanitizes its captures by the same rules. A
 model that declares no tags captures the request verbatim, which is worth
@@ -109,6 +123,51 @@ maatml run <model>                              # the new seeds make prepare sta
 true` (dropping the flag does not sneak it through), so a raw model prediction
 can never become training data without a human or teacher approving it.
 
+### `--server anthropic`, the Messages API in front of llama.cpp
+
+A translating proxy rather than a runtime: llama.cpp holds the weights and
+renders the chat template, and this supplies only the protocol, so any Anthropic
+client reaches a fine-tuned local model without knowing it is one.
+
+```bash
+llama-server --jinja -m model.gguf --port 8081 &
+maatml serve <model-dir> --server anthropic \
+    --server-option upstream=http://127.0.0.1:8081 --port 8100
+```
+
+| option | default | meaning |
+|---|---|---|
+| `upstream` | `http://127.0.0.1:8081` | the OpenAI-compatible server holding the weights |
+| `model` | the folder's `model_id` | the name echoed back in the response |
+| `timeout` | `600` | seconds to wait on the upstream |
+| `tool_style` | `native` | `native` declares tools upstream; `inline` carries them in message text |
+| `call_retries` | unset | how many times a turn owing a tool call is re-asked |
+
+`tool_style=inline` serves a model fine-tuned on the text protocol in
+`maatml.wire.inline_tools` rather than on a chat template's tool syntax: the
+catalogue travels as one line per tool in the last user turn, a call is a JSON
+object ending the assistant turn, and a result returns as
+`<tool_response>…</tool_response>`. The upstream then never sees a tool at all,
+so `--jinja` buys nothing under it. Because one module renders both the corpus
+and the wire, the string trained on is the string served.
+
+`call_retries=N` makes a turn that follows a user message owe a call: a reply
+carrying none is re-asked up to N times and then says plainly that nothing ran.
+It never applies to a turn answering a tool result, because summarising one is
+how a loop ends, and unset leaves prose allowed.
+
+`--enforce` and `--max-retries` gate this backend the way they gate `http`.
+Every reply is collected before any of it is sent, for the same reason
+`call_retries` collects one: whether a reply is valid is only known once it
+ends. The model folder's validator judges the collected text; a rejection goes
+back to the model as the failed reply plus the validator's own message, re-asked
+up to `--max-retries` times, and a reply that never passes is replaced under
+`--enforce` by a plain statement of what was refused and that nothing ran.
+Without `--enforce` the retries still run and the last reply stands. Requires
+`tool_style=inline`, because the text the validator was trained against is the
+inline transcript. The Anthropic proxy does not write capture rows; attach
+`open_capture` in a custom backend if that flywheel is needed there.
+
 ## 2. ONNX / edge (vision)
 
 `vision_multitask` exports to **ONNX** for `onnxruntime` (CPU on Mac) or the
@@ -127,7 +186,7 @@ directly** for OpenAI-compatible, higher-throughput serving:
 vllm serve examples/vision-vlm/output/export/<run_id>
 ```
 
-The [`vision-vlm` example](https://github.com/moralfish/maatml/tree/main/examples/vision-vlm)
+The [`vision-vlm` example](https://github.com/Moralfish-Labs/maatml/tree/main/examples/vision-vlm)
 ships `serve_vllm.sh` (Linux / Jetson container) and an OpenAI-compatible client.
 Its evaluator can even score against a live vLLM endpoint, set
 `MAATML_VLLM_ENDPOINT` and the predictor switches to the chat-completions API
@@ -138,6 +197,19 @@ pip install "maatml[vllm]"     # Linux-only
 export MAATML_VLLM_ENDPOINT=http://127.0.0.1:8000
 maatml evaluate examples/vision-vlm --gate
 ```
+
+## Adding files to an export
+
+If an external tool writes an additional artifact inside the export directory,
+register its checksum before verifying the bundle:
+
+```bash
+maatml manifest amend /path/to/export /path/to/export/model-q5.gguf --format gguf
+maatml verify /path/to/export
+```
+
+Amendment preserves existing gate evidence. It does not evaluate or certify the
+added artifact; evaluate the deployed representation separately.
 
 ## Verifying an export
 
