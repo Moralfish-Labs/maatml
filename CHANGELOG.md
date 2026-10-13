@@ -8,6 +8,13 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed documentation and example setup against the current CLI and plugin
+  contracts. Added a CLI reference, troubleshooting and contributor pages;
+  exposed configuration and agent references in MkDocs navigation. Strict
+  documentation builds now check navigation, local links and anchors in CI.
+
 ### Fixed
 
 - Chat rendering and masking pass tool definitions and template options as
@@ -923,7 +930,7 @@ plugin security floor, and config honesty.
 - **Renamed the project from flow-ml to MaatML.** Package / CLI / entry-point
   group are now `maatml` / `maatml` / `maatml.plugins`. Resolves the name
   collision with [MLflow](https://mlflow.org/). GitHub repo:
-  [moralfish/maatml](https://github.com/moralfish/maatml).
+  [Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maatml).
 - **Examples-first restructure:** `jcl-validator` and `spool-interpreter` live
   under `examples/` with folder-local plugins (`jcl_plugin` / `spool_plugin`).
   Core owns architectures (`causal_sft`, `seq2seq`, `multi_head_classifier`);

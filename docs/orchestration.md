@@ -60,8 +60,10 @@ the absence of errors. Exact stochastic replay depends on the trainer's saved
 state; `--resume` alone is not a universal bit-for-bit guarantee.
 
 A remote snapshot used for recovery must retain mid-run checkpoints.
-`runs --pack` omits nested `checkpoint-*` directories and is intended to carry
-the completed run and evidence, not replace an interrupted-training backup.
+`runs --pack` omits nested `checkpoint-*` directories by default;
+`--with-checkpoints` includes them. Neither option establishes that a live
+checkpoint is complete. Preserve a consistent recovery snapshot and confirm
+trainer state before resuming.
 
 ## Bring a completed run home
 

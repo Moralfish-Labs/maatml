@@ -14,23 +14,26 @@ ships with a contract, not just weights. That validator-gated
 *data → eval → serving* loop, now across modalities, is what general
 fine-tuning tools leave out.
 
-**Install from PyPI** (not from source):
+**Install a released package from PyPI:**
 
 ```bash
 pip install maatml
 pip install "maatml[ml]"       # training stack
 pip install "maatml[ml,vision]"  # + torchvision and ONNX (vision / VLM examples)
-pip install "maatml[docs]"     # this site: mkdocs serve
 ```
 
 - Site: [maatml.pages.dev](https://maatml.pages.dev)
 - PyPI: [pypi.org/project/maatml](https://pypi.org/project/maatml/)
-- Source: [github.com/moralfish/maatml](https://github.com/moralfish/maatml)
+- Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maatml)
 
 ## Documentation
 
 - [Get started](getting-started.md): install, smoke-test, train and serve a model
 - [The validator-gated lifecycle](lifecycle.md): the core idea, end to end
+- [The data flywheel](flywheel.md): generation, distillation, ingestion and reviewed captures
+- [CLI reference](cli.md) and [model.yml reference](skill/references/model-yml.md)
+- [Troubleshooting](troubleshooting.md): installation, data, gates and recovery
+- [Contributing](contributing.md): development and documentation checks
 - [Evidence](evidence.md): derived floors, the ship decision, operating points, named populations, licences, portable runs
 - [Orchestration and recovery](orchestration.md): CLI ownership, remote workers, checkpoint continuation and portable evidence
 - [Rollouts](rollouts.md): environment verification and DAgger collection (unreleased)
@@ -40,9 +43,9 @@ pip install "maatml[docs]"     # this site: mkdocs serve
 
 Canonical references in the repo:
 
-- [README.md](https://github.com/moralfish/maatml/blob/main/README.md): install, CLI overview, examples
-- [ROADMAP.md](https://github.com/moralfish/maatml/blob/main/ROADMAP.md): tranche status
-- [CHANGELOG.md](https://github.com/moralfish/maatml/blob/main/CHANGELOG.md): release notes
+- [README.md](https://github.com/Moralfish-Labs/maatml/blob/main/README.md): install, CLI overview, examples
+- [ROADMAP.md](https://github.com/Moralfish-Labs/maatml/blob/main/ROADMAP.md): tranche status
+- [CHANGELOG.md](https://github.com/Moralfish-Labs/maatml/blob/main/CHANGELOG.md): release notes
 
 ## Quick CLI map
 
@@ -54,6 +57,7 @@ Canonical references in the repo:
 | `maatml gates derive` / `ship-check` / `operating-point derive` | Floors from reports, the release verdict, the val-derived threshold ([evidence](evidence.md)) |
 | `maatml runs` / `report` | The run registry (`--pack` / `--adopt` to move a run); the evidence document from the records alone |
 | `maatml export` | Bundle checkpoint (safetensors / gguf / mlx / onnx) + `manifest.json` |
+| `maatml compile` / `manifest amend` | Target compilation and checksummed additions to an export |
 | `maatml verify` | Recompute sha256 of manifest files |
 | `maatml serve` | JSON inference API, validator inline (`/predict?validate=1`) |
 | `maatml datagen` / `distill` / `ingest` / `mint` | Validator-gated [data flywheel](flywheel.md) |

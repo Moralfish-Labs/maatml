@@ -69,7 +69,7 @@ tranches below describe completed work; they are not the current task queue.
 
 Before the next package release, run the lint, formatting, type, test,
 standalone-wheel and CPU lifecycle CI gates against the same revision, build
-the docs, and move the accepted Unreleased entries into versioned release
+the docs with `mkdocs build --strict`, and move the accepted Unreleased entries into versioned release
 notes. A passing unit suite does not establish every architecture/device
 combination or a model's production quality.
 

@@ -18,7 +18,7 @@ license = { text = "Apache-2.0" }
 authors = [
   { name = "Nedal Elghamry" }
 ]
-urls = { Homepage = "https://maatml.pages.dev", Documentation = "https://maatml.pages.dev", Repository = "https://github.com/moralfish/maatml", Changelog = "https://github.com/moralfish/maatml/blob/main/CHANGELOG.md" }
+urls = { Homepage = "https://maatml.pages.dev", Documentation = "https://maatml.pages.dev", Repository = "https://github.com/Moralfish-Labs/maatml", Changelog = "https://github.com/Moralfish-Labs/maatml/blob/main/CHANGELOG.md" }
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: Apache Software License",

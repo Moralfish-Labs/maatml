@@ -8,7 +8,7 @@ Guidance for AI coding agents working in this repository.
 This file is for **contributors** working in a checkout.
 
 All commands assume the project venv (`.venv/bin/...`). Training needs the
-`[ml]` extra (torch, transformers, peft, tokenizers). CPU-free contributions
+`[ml]` extra (torch, transformers, peft, tokenizers). Torch-free contributions
 can use `pip install -e ".[dev]"`; unit tests run without torch.
 
 ```bash
@@ -23,6 +23,7 @@ pip install -e ".[dev,ml]"
 # pip install -e ".[dev,ml,vision]" # torchvision + ONNX for examples/vision
 # pip install -e ".[vllm]"          # Linux-only OpenAI-compatible VLM serving
 
+# Docs: pip install -e ".[docs]" then mkdocs build --strict
 # Test / lint (run from repo root)
 .venv/bin/python -m pytest tests/ examples/ -q
 ruff check src tests scripts examples

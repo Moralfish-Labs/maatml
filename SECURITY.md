@@ -6,7 +6,8 @@ Security fixes are applied to the latest **0.x** release of maatml.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.x     | Yes       |
+| Latest 0.x release | Yes |
+| Earlier releases | No backport commitment |
 
 ## Trust model
 
@@ -26,7 +27,7 @@ Please **do not** open a public GitHub issue for security reports.
 Prefer one of:
 
 1. **GitHub private vulnerability reporting** (preferred): use the
-   [Security Advisories](../../security/advisories/new) flow on this repository
+   [Security Advisories](https://github.com/Moralfish-Labs/maatml/security/advisories/new) flow on this repository
    when available.
 2. **Email**: nedal.elghamry@gmail.com
 

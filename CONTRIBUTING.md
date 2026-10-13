@@ -25,15 +25,15 @@ Docs and site: [maatml.pages.dev](https://maatml.pages.dev) ·
 
 ## Development setup
 
-Clone only when changing the framework itself:
+Clone to develop the framework, work on documentation, or run the source examples:
 
 ```bash
-git clone https://github.com/moralfish/maatml.git
+git clone https://github.com/Moralfish-Labs/maatml.git
 cd maatml
 python -m venv .venv
 source .venv/bin/activate
 
-# CPU-free contributions (tests run without torch)
+# Torch-free contributions (tests run without torch)
 pip install -e ".[dev]"
 
 # Training / evaluation work
@@ -53,6 +53,27 @@ mypy src/maatml --ignore-missing-imports
 pytest tests/ examples/ -q
 ```
 
+## Documentation
+
+From the repository root:
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve
+mkdocs build --strict
+```
+
+The build fails on missing navigation entries, local links, anchors and snippet
+sources. All published pages belong in `mkdocs.yml`. Example pages include
+`examples/*/README.md`; edit those sources rather than copying their content.
+The configuration and plugin references under `docs/skill/references/` also
+serve the bundled agent skill. Keep them consistent with the public guides.
+
+Check CLI examples against `maatml <command> --help` and the implementation.
+Distinguish released behavior from Unreleased source features, and smoke
+checks from production quality evidence. Documentation checks do not require
+training, teacher calls or deployment. Do not commit generated `site/` output.
+
 ## Where to start
 
 New here? These are good first contributions: small, self-contained, and
@@ -71,9 +92,9 @@ genuinely useful:
 - **Docs.** Improve a walkthrough, a plugin hook, or an example README (the VLM
   path especially).
 
-Browse [issues labelled `good first issue`](https://github.com/moralfish/maatml/labels/good%20first%20issue),
-or open a [feature](https://github.com/moralfish/maatml/issues/new?template=feature_request.md)
-or [plugin/task](https://github.com/moralfish/maatml/issues/new?template=plugin_request.md)
+Browse [issues labelled `good first issue`](https://github.com/Moralfish-Labs/maatml/labels/good%20first%20issue),
+or open a [feature](https://github.com/Moralfish-Labs/maatml/issues/new?template=feature_request.md)
+or [plugin/task](https://github.com/Moralfish-Labs/maatml/issues/new?template=plugin_request.md)
 issue to discuss anything larger first.
 
 ## Pull requests
@@ -95,7 +116,7 @@ publisher with:
 
 | Field | Value |
 | ----- | ----- |
-| Owner | `moralfish` |
+| Owner | `Moralfish-Labs` |
 | Repository name | `maatml` |
 | Workflow name | `publish.yml` |
 | Environment name | `pypi` |

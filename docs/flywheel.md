@@ -1,10 +1,10 @@
 # The data flywheel
 
-Training data is the scarce input, and a validator-gated model turns its own
-contract into a way to make more of it. Every source operation below is
-explicit, and every row it produces is gated by the same `evaluation.validator`
-that gates eval and serve, so a row that enters the corpus is a row the model is
-graded against.
+Each source operation changes the corpus explicitly. Configure
+`evaluation.validator` to check labels against the same contract used in
+evaluation and serving. `datagen` fails closed unless `--allow-ungated` is set;
+`ingest` validates only when a validator is configured. `mint` deliberately
+retains a failing completion as the rejected half of each preference pair.
 
 These are deliberate operations, not steps of `maatml run`. They change the seed
 corpus, and that is exactly what makes `prepare` stale on the next run:
