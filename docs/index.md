@@ -36,7 +36,7 @@ pip install "maatml[ml,vision]"  # + torchvision and ONNX (vision / VLM examples
 - [Contributing](contributing.md): development and documentation checks
 - [Evidence](evidence.md): derived floors, the ship decision, operating points, named populations, licences, portable runs
 - [Orchestration and recovery](orchestration.md): CLI ownership, remote workers, checkpoint continuation and portable evidence
-- [Rollouts](rollouts.md): environment verification and DAgger collection (unreleased)
+- [Rollouts](rollouts.md): environment verification and DAgger collection
 - [Serving & deployment](serving.md): `maatml serve`, ONNX/edge, and vLLM (VLMs)
 - [Plugin author guide](plugins.md): register trainers, validators, metrics, exporters, generators
 - [Examples](examples/index.md): four reference models, from support-ticket triage to a vLLM-servable VLM
@@ -62,16 +62,16 @@ Canonical references in the repo:
 | `maatml serve` | JSON inference API, validator inline (`/predict?validate=1`) |
 | `maatml datagen` / `distill` / `ingest` / `mint` | Validator-gated [data flywheel](flywheel.md) |
 | `maatml run` / `plan` | Fixed lifecycle and freshness planning |
-| `maatml rollout` (unreleased) | Environment-verified episodes and optional teacher labels |
+| `maatml rollout` | Environment-verified episodes and optional teacher labels |
 
 See the [Plugin author guide](plugins.md) for registering generators, exporters,
 validators, and metrics.
 
 ## Release boundary
 
-The package version is **0.13.0**. These docs also cover unreleased source
-features: rollouts, train-only rows, tool-call chat training, and corrected
-multi-turn masking. Check the command's availability in your installed version;
-the repository changelog distinguishes shipped releases from Unreleased work.
+These docs describe **0.14.0**, including rollouts, train-only rows, tool-call
+chat training and corrected multi-turn masking. Upgrade older installations
+to use these features. The repository changelog distinguishes shipped releases
+from future Unreleased work.
 Model recipes and task plugins remain independent of the framework, while
 external orchestrators manage compute, storage and monitoring.

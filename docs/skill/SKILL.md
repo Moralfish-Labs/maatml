@@ -45,7 +45,7 @@ maatml runs <model-dir> [--compare]  # what has been recorded
 maatml runs <model-dir> --pack RUN   # the run, its evidence and its record, in one tar
 maatml runs <model-dir> --adopt B    # unpack a bundle here; refuses another recipe
 maatml report <model-dir>            # runs, floors with derivation, slices, seeds, spends
-maatml rollout <model-dir> --env line_world --tasks '{"count": 50}' --label  # unreleased
+maatml rollout <model-dir> --env line_world --tasks '{"count": 50}' --label
 ```
 
 `run` skips steps whose fingerprint still matches — effective config, declared
@@ -61,7 +61,7 @@ which is exactly what makes `prepare` stale next run.
 Rollout collection also stays explicit. Its environment verifies outcomes;
 the format plugin can pass collected rows as `train_rows` to `prepare_rows`
 without moving held-out populations. Rollouts, train-only rows and tool-call
-chat training are implemented after 0.13.0 and remain Unreleased.
+chat training are available in 0.14.0 and later.
 
 External orchestration owns worker provisioning, storage transfers, monitoring
 and cleanup. For recovery, preserve mid-run checkpoints and use a verified

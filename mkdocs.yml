@@ -3,6 +3,8 @@ site_description: Experimentation → production for small text, vision, and vis
 site_url: https://maatml.pages.dev/
 repo_url: https://github.com/Moralfish-Labs/maatml
 repo_name: Moralfish-Labs/maatml
+extra:
+  release_version: "0.14.0"
 edit_uri: edit/main/docs/
 strict: true
 validation:

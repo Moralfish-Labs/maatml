@@ -31,9 +31,9 @@ does not belong in them.
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
 
-Current package version: **0.13.0**. The Unreleased row describes implemented
-source changes that have not been assigned a new release version. Historical
-tranches below describe completed work; they are not the current task queue.
+Current package version: **0.14.0**. Rollouts, train-only rows and tool-call
+chat training are released. Historical tranches below describe completed work;
+they are not the current task queue.
 
 | Tranche | Theme | Status |
 |---|---|---|
@@ -54,7 +54,7 @@ tranches below describe completed work; they are not the current task queue.
 | v0.11.1–0.11.2 | Attribution fields and recorded evaluation overrides; operating-point config validation | Done |
 | v0.12 | Batched evaluation with per-row evidence and amortized latency reporting | Done |
 | v0.13 | Lifecycle evaluation-schema parity and CLI version reporting | Done |
-| Unreleased | Rollout environment protocol, DAgger labels, streamed progress and Wilson intervals; train-only rows; tool-call chat training and multi-turn masking; inline gate rewrite fix | Implemented; pending release |
+| v0.14 | Rollout environment protocol, DAgger labels, streamed progress and Wilson intervals; train-only rows; tool-call chat training and multi-turn masking; inline gate rewrite fix | Done |
 | — | Slim artifact distribution | Planned |
 
 ## Current ownership and next work

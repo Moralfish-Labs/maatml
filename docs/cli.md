@@ -1,9 +1,8 @@
 # CLI reference
 
 Run `maatml --version` to identify the installed package and
-`maatml COMMAND --help` for its full option list. These docs describe the source
-checkout; rollout collection and tool-call chat training remain Unreleased
-after 0.13.0. `maatml --debug COMMAND` includes tracebacks for input errors.
+`maatml COMMAND --help` for its full option list. These docs describe
+**0.14.0**, including rollout collection and tool-call chat training. `maatml --debug COMMAND` includes tracebacks for input errors.
 
 Most commands take a folder containing `model.yml`. Paths declared in that
 file resolve relative to the model folder. Replace placeholders such as
@@ -46,7 +45,7 @@ and data collection are separate operations. See [lifecycle](lifecycle.md).
 | `maatml distill MODEL --prompts prompts.jsonl` | Label prompts through a teacher; `--replay` consumes the recorded cache offline. |
 | `maatml ingest MODEL --input rows.jsonl` | Map, sanitize and optionally validate imported rows. |
 | `maatml mint MODEL --input candidates.jsonl` | Create chosen/rejected preference pairs from validator verdicts. |
-| `maatml rollout MODEL --env NAME --label` | Collect verified episodes and teacher labels using a compatible policy predictor (Unreleased). |
+| `maatml rollout MODEL --env NAME --label` | Collect verified episodes and teacher labels using a compatible policy predictor. |
 
 These commands can change source data. See [the data flywheel](flywheel.md)
 and [rollouts](rollouts.md) for provenance and held-out population boundaries.

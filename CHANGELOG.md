@@ -8,6 +8,8 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-13
+
 ### Changed
 
 - Refreshed documentation and example setup against the current CLI and plugin
@@ -16,6 +18,9 @@ for the Python package and per-model versions under `examples/`.
   documentation builds now check navigation, local links and anchors in CI.
 
 ### Fixed
+
+- The rollout CLI regression test isolates device resolution so the fake
+  policy runs in Torch-free CI on Linux, macOS and Windows.
 
 - Chat rendering and masking pass tool definitions and template options as
   explicit typed arguments. Tool-call normalization narrows the optional

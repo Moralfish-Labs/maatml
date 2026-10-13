@@ -15,7 +15,7 @@ readable findings; warnings alone do not fail the command.
 
 | Symptom | Check and next step |
 | --- | --- |
-| A documented command is missing | Compare `maatml --help` with the release boundary. Rollouts and tool-call training are Unreleased source features. |
+| A documented command is missing | Compare `maatml --help` with the release boundary. Rollouts and tool-call training require 0.14.0 or later. |
 | `Unknown ... plugin` | Check `plugins:` paths relative to the model folder and `maatml plugins` import failures. Install the plugin's dependencies in the same environment. |
 | Missing image files | Generate the vision or VLM corpus with its `scripts/build_seeds.py`; image assets are not tracked. |
 | Empty split or group warning | Inspect `dataset.group_by`, group sizes, pins and isolation. A fallback to row splitting loses group-level protection. |

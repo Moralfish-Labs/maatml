@@ -24,11 +24,11 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The package version is **0.13.0**. The source checkout also contains unreleased
-rollout/DAgger collection, train-only dataset rows, tool-call chat training,
-and multi-turn masking fixes. These are implemented features, not guarantees
-about an installed 0.13.0 wheel; see [CHANGELOG.md](CHANGELOG.md) for the release
-boundary and [ROADMAP.md](ROADMAP.md) for remaining work.
+The package version is **0.14.0**. This release includes rollout/DAgger
+collection, train-only dataset rows, tool-call chat training and multi-turn
+masking fixes. Upgrade older installations to use these features; see
+[CHANGELOG.md](CHANGELOG.md) for release notes and [ROADMAP.md](ROADMAP.md)
+for remaining work.
 
 MaatML owns the model lifecycle and its evidence. Model folders own task
 contracts and recipes; an external orchestrator owns remote machines,
@@ -146,7 +146,7 @@ line; `maatml --debug <command>` prints the traceback.
 | `plan` | Show which lifecycle steps are stale (alias for `run --dry-run`) |
 | `plugins` | List registered trainers, validators, metrics, formats, generators, exporters, compilers, servers and environments |
 | `audit` | Check the environment, plugins, and a model folder; exits 1 on problems |
-| `rollout` (unreleased) | Run a checkpoint in a verifying environment; `--label` collects teacher labels for DAgger, and `--teacher-mix` mixes teacher decisions |
+| `rollout` | Run a checkpoint in a verifying environment; `--label` collects teacher labels for DAgger, and `--teacher-mix` mixes teacher decisions |
 | `scaffold` | Create a new model folder (`--architecture`, `--plugin`, `--force`) |
 | `validate` | Check `model.yml` and paths (`--no-plugins` skips plugin code) |
 
@@ -161,9 +161,9 @@ Export defaults to a safetensors bundle + `manifest.json`. GGUF/MLX need
 external tooling (`llama.cpp` convert / `mlx_lm`). Pin base-model revisions
 with `training.model_revision`.
 
-The unreleased causal SFT path also preserves per-row tool definitions,
+The causal SFT path also preserves per-row tool definitions,
 assistant tool calls and tool results. It supervises every assistant turn and
-masks the other roles; see [tool-call chat training](docs/lifecycle.md#tool-call-chat-training-unreleased).
+masks the other roles; see [tool-call chat training](docs/lifecycle.md#tool-call-chat-training).
 
 Docs: [maatml.pages.dev](https://maatml.pages.dev) · Roadmap: [ROADMAP.md](ROADMAP.md) ·
 In-repo docs: `docs/` (from the repository root, `pip install -e ".[docs]"`
