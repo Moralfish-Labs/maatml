@@ -163,6 +163,17 @@ def _row_identity(row: dict) -> str:
     return stable_hash(json.dumps(row, sort_keys=True, default=str))[:16]
 
 
+def _warn_degenerate_group(dominant_key: str, members: int, total: int) -> None:
+    message = (
+        f"group key {dominant_key!r} covers {members}/{total} rows: "
+        "splitting those rows individually so val/test are not empty. "
+        "Group-level leakage protection does NOT apply to them; stamp a "
+        "real family/group_by field (seed builders do) to restore it."
+    )
+    warnings.warn(message, RuntimeWarning, stacklevel=4)
+    console.print(f"[yellow]warning[/] {message}")
+
+
 def _group_rows(
     rows: list[dict], *, group_by: Optional[str] = None
 ) -> tuple[dict[str, list[dict]], Optional[str]]:
@@ -186,14 +197,7 @@ def _group_rows(
     if len(members) < 2 or len(members) / len(rows) < _DEGENERATE_GROUP_SHARE:
         return groups, None
 
-    message = (
-        f"group key {dominant_key!r} covers {len(members)}/{len(rows)} rows: "
-        "splitting those rows individually so val/test are not empty. "
-        "Group-level leakage protection does NOT apply to them; stamp a "
-        "real family/group_by field (seed builders do) to restore it."
-    )
-    warnings.warn(message, RuntimeWarning, stacklevel=3)
-    console.print(f"[yellow]warning[/] {message}")
+    _warn_degenerate_group(dominant_key, len(members), len(rows))
     del groups[dominant_key]
     for row in members:
         groups[f"{dominant_key}#row:{_row_identity(row)}"].append(row)
@@ -236,8 +240,13 @@ def _warn_on_empty_splits(by_split: dict[Split, list[dict]], *, n_groups: int) -
     with nothing in it. Training then skips evaluation entirely and still
     reports success, so the operator needs to hear about it here.
     """
-    empty = [split.value for split, rows in by_split.items() if not rows]
-    if not empty or not any(by_split.values()):
+    _warn_on_empty_counts({split: len(rows) for split, rows in by_split.items()}, n_groups=n_groups)
+
+
+def _warn_on_empty_counts(counts: dict[Split, int], *, n_groups: int) -> None:
+    """``_warn_on_empty_splits`` over per-split row counts."""
+    empty = [split.value for split, n in counts.items() if not n]
+    if not empty or not any(counts.values()):
         return
     message = (
         f"split(s) {', '.join(sorted(empty))} are empty: {n_groups} group(s) "

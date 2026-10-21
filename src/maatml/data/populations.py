@@ -161,30 +161,62 @@ def apply_pins(rows_by_split: dict[str, list[dict]], pins: Iterable[Pin]) -> dic
     return moved
 
 
+class IsolationTally:
+    """What the isolation check reads from one population, kept as it streams by.
+
+    The check only needs, per level named in the policy, the set of values a
+    population holds and how many of its rows lack the level, so a population
+    of any size is summarised in memory proportional to its distinct values.
+    """
+
+    def __init__(self, isolation: Isolation) -> None:
+        self.levels = tuple(sorted(set(isolation.policy.values())))
+        self.rows = 0
+        self.missing: dict[str, int] = {level: 0 for level in self.levels}
+        self.values: dict[str, set[str]] = {level: set() for level in self.levels}
+
+    def add(self, row: dict[str, Any]) -> None:
+        self.rows += 1
+        for level in self.levels:
+            raw = row.get(level)
+            if raw is None:
+                self.missing[level] += 1
+            else:
+                self.values[level].add(str(raw))
+
+    def merge(self, other: "IsolationTally") -> "IsolationTally":
+        merged = IsolationTally.__new__(IsolationTally)
+        merged.levels = self.levels
+        merged.rows = self.rows + other.rows
+        merged.missing = {k: self.missing[k] + other.missing[k] for k in self.levels}
+        merged.values = {k: self.values[k] | other.values[k] for k in self.levels}
+        return merged
+
+
 def _values(rows: Iterable[dict[str, Any]], field_name: str) -> set[str]:
     return {str(row[field_name]) for row in rows if row.get(field_name) is not None}
 
 
-def check_isolation(
-    populations: dict[str, list[dict[str, Any]]], isolation: Isolation
+def check_isolation_tallies(
+    tallies: dict[str, IsolationTally], isolation: Isolation
 ) -> list[str]:
-    """Violations of the declared policy: a level value shared with training,
-    or between two held-out populations."""
-    train = populations.get("train", [])
+    """``check_isolation`` over population tallies instead of row lists."""
+    train = tallies.get("train")
+    train_values: dict[str, set[str]] = train.values if train is not None else {}
     problems: list[str] = []
-    held = [p for p in ("val", "benchmark", "blind") if populations.get(p)]
+    held = [p for p in ("val", "benchmark", "blind") if tallies.get(p) and tallies[p].rows]
     for population in held:
         level = isolation.level_for(population)
         if level is None:
             continue
-        rows = populations[population]
-        missing = sum(1 for row in rows if row.get(level) is None)
+        tally = tallies[population]
+        missing = tally.missing[level]
         if missing:
             problems.append(
                 f"{population}: {missing} row(s) lack isolation field {level!r}; "
                 "every row must name the level it is isolated at"
             )
-        shared = _values(rows, level) & _values(train, level)
+        shared = tally.values[level] & train_values.get(level, set())
         if shared:
             problems.append(
                 f"{population} is {level}-disjoint from train by policy but shares "
@@ -201,10 +233,24 @@ def check_isolation(
                 if isolation.fields.index(level) >= isolation.fields.index(other_level)
                 else other_level
             )
-            overlap = _values(rows, coarse) & _values(populations[other], coarse)
+            overlap = tally.values[coarse] & tallies[other].values[coarse]
             if overlap:
                 problems.append(f"{population} and {other} share {coarse} {sorted(overlap)[:5]}")
     return problems
+
+
+def check_isolation(
+    populations: dict[str, list[dict[str, Any]]], isolation: Isolation
+) -> list[str]:
+    """Violations of the declared policy: a level value shared with training,
+    or between two held-out populations."""
+    tallies: dict[str, IsolationTally] = {}
+    for population, rows in populations.items():
+        tally = IsolationTally(isolation)
+        for row in rows:
+            tally.add(row)
+        tallies[population] = tally
+    return check_isolation_tallies(tallies, isolation)
 
 
 def _row_identity(row: dict[str, Any]) -> str:
@@ -212,10 +258,24 @@ def _row_identity(row: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, default=str)
 
 
+def row_identity(row: dict[str, Any]) -> str:
+    """The text a benchmark row contributes to the benchmark version."""
+    return _row_identity(row)
+
+
 def benchmark_version(rows: Iterable[dict[str, Any]], pins: Iterable[Pin]) -> str:
     """Order-insensitive content hash of the benchmark rows plus the pins that built it."""
+    return benchmark_version_from_identities(sorted(_row_identity(row) for row in rows), pins)
+
+
+def benchmark_version_from_identities(identities: Iterable[str], pins: Iterable[Pin]) -> str:
+    """``benchmark_version`` over row identities already in sorted order.
+
+    Lets a caller that cannot hold the rows sort their identities elsewhere
+    (an external merge sort) and still arrive at the same hash.
+    """
     h = hashlib.sha256()
-    for identity in sorted(_row_identity(row) for row in rows):
+    for identity in identities:
         h.update(identity.encode("utf-8"))
         h.update(b"\n")
     for pin in sorted((p.population, p.label) for p in pins):

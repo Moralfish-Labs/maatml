@@ -226,6 +226,21 @@ def check_sources(
             unsourced += 1
             continue
         used[str(source).strip()] = used.get(str(source).strip(), 0) + 1
+    return check_source_counts(used, unsourced, entries, field=field)
+
+
+def check_source_counts(
+    used: dict[str, int],
+    unsourced: int,
+    entries: dict[str, SourceEntry],
+    *,
+    field: str = DEFAULT_ATTRIBUTION_FIELD,
+) -> SourceCheck:
+    """``check_sources`` over counts gathered while rows streamed by.
+
+    ``used`` maps each stripped ``field`` value to its row count; ``unsourced``
+    counts the rows that carried none.
+    """
     refusals: list[str] = []
     accepted: dict[str, str] = {}
     if unsourced:
