@@ -640,6 +640,13 @@ def prepare(model_def: ModelDefinition, out_dir: Optional[Path] = None) -> dict:
         for raw in iter_jsonl(model_def.resolve(blind_path)):
             blind_rows.append(_apply_sanitize(raw, sanitize_tags, request_field))
 
+    train_rows: list[dict] = []
+    train_path = cfg.get("train_samples")
+    if train_path:
+        input_files.append(model_def.resolve(train_path))
+        for raw in iter_jsonl(model_def.resolve(train_path)):
+            train_rows.append(_apply_sanitize(raw, sanitize_tags, request_field))
+
     return prepare_rows(
         model_def,
         seed_rows,
@@ -650,4 +657,5 @@ def prepare(model_def: ModelDefinition, out_dir: Optional[Path] = None) -> dict:
         sanitize_applied=sanitize_tags,
         blind_rows=blind_rows or None,
         input_files=input_files,
+        train_rows=train_rows or None,
     )

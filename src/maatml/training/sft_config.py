@@ -97,6 +97,7 @@ class SFTTrainConfig(BaseModel):
     eval_steps: int = 9999
     save_steps: int = 200
     logging_steps: int = 20
+    disable_tqdm: bool = False
     max_steps: int = -1
     lora: LoraSettings = Field(default_factory=LoraSettings)
     report_to: Any = None

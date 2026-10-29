@@ -83,7 +83,7 @@ def from_pretrained_kwargs(
     else:
         dtype = resolve_load_dtype(profile, precision, frozen_base=frozen_base)
         if dtype is not None:
-            kwargs["torch_dtype"] = dtype
+            kwargs["dtype"] = dtype
     if attn_implementation:
         kwargs["attn_implementation"] = attn_implementation
     if revision:

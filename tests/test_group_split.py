@@ -11,6 +11,33 @@ from maatml.data.pipeline import _assign_group_splits, _group_key, prepare, prep
 from maatml.utils.io import iter_jsonl, write_jsonl
 
 
+def test_declared_train_samples_preserve_test_population(tmp_path: Path) -> None:
+    config = tmp_path / "model.yml"
+    config.write_text(
+        "name: supplement\nmodel_id: supplement\narchitecture: causal_sft\nversion: 0.1.0\n"
+        "dataset:\n  seed_samples: seeds.jsonl\n"
+    )
+    write_jsonl(
+        tmp_path / "seeds.jsonl",
+        [
+            {"sample_id": str(i), "family": f"group{i}", "request": f"original {i}"}
+            for i in range(30)
+        ],
+    )
+    md = load_model_def(tmp_path)
+    prepare(md)
+    before = {split: (md.prepared_dir / f"{split}.jsonl").read_bytes() for split in ("val", "test")}
+    write_jsonl(
+        tmp_path / "extra.jsonl",
+        [{"sample_id": "extra", "family": "new_group", "request": "new training request"}],
+    )
+    config.write_text(config.read_text() + "  train_samples: extra.jsonl\n")
+    prepare(load_model_def(tmp_path))
+    assert any(row["sample_id"] == "extra" for row in iter_jsonl(md.prepared_dir / "train.jsonl"))
+    for split, content in before.items():
+        assert (md.prepared_dir / f"{split}.jsonl").read_bytes() == content
+
+
 def test_family_group_does_not_straddle(tmp_path: Path) -> None:
     mdir = tmp_path / "model"
     (mdir / "datasets" / "samples").mkdir(parents=True)

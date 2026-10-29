@@ -27,6 +27,7 @@ _PATH_KEYS = frozenset(
         "schema",
         "prompt_spec",
         "seed_samples",
+        "train_samples",
         "benchmark_samples",
         "contracts",
         "tokenizer",
@@ -265,6 +266,7 @@ _DATASET_KNOWN_KEYS = frozenset(
         "contracts",
         "template_dir",
         "sources",
+        "train_samples",
         "base_model_name_or_path",
         # image_caption_folder (diffusion corpora)
         "source_dir",

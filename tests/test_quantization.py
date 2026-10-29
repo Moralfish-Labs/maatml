@@ -53,12 +53,15 @@ def test_from_pretrained_kwargs_attn_passthrough() -> None:
         attn_implementation="sdpa",
     )
     assert kwargs["attn_implementation"] == "sdpa"
-    assert "torch_dtype" not in kwargs  # fp32_master
+    assert "dtype" not in kwargs  # fp32_master
+    assert "torch_dtype" not in kwargs
 
 
-def test_from_pretrained_kwargs_native_dtype() -> None:
+@pytest.mark.parametrize("device,frozen_base", [("cuda", False), ("cpu", True), ("mps", True)])
+def test_from_pretrained_kwargs_native_dtype(device: str, frozen_base: bool) -> None:
     pytest.importorskip("torch")
     import torch
 
-    kwargs = from_pretrained_kwargs(get_profile("cuda"), precision="bf16")
-    assert kwargs["torch_dtype"] is torch.bfloat16
+    kwargs = from_pretrained_kwargs(get_profile(device), precision="bf16", frozen_base=frozen_base)
+    assert kwargs["dtype"] is torch.bfloat16
+    assert "torch_dtype" not in kwargs

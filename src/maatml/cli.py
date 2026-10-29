@@ -388,6 +388,11 @@ def cmd_sweep(
 @app.command("evaluate")
 def cmd_evaluate(
     model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Report and prediction-cache directory; defaults to output/eval/",
+    ),
     checkpoint: Optional[str] = typer.Option(
         None,
         "--checkpoint",
@@ -487,6 +492,7 @@ def cmd_evaluate(
             force=force,
             overrides=applied or None,
             batch_size=batch_size,
+            out_dir=out,
         )
     except GateConfigError as exc:
         raise typer.BadParameter(str(exc), param_hint="evaluation") from exc
@@ -875,13 +881,19 @@ def cmd_ship_check(
         tiers=tiers,
         max_regression=max_regression,
         replayed=replayed,
+        gates_benchmark=md.evaluation.get("gates_benchmark"),
         candidate_label=candidate,
         baseline_label=baseline,
     )
     if as_json:
         import json as _json
 
-        console.print(_json.dumps(verdict.as_dict(), indent=2, sort_keys=True))
+        console.print(
+            _json.dumps(verdict.as_dict(), indent=2, sort_keys=True),
+            soft_wrap=True,
+            markup=False,
+            highlight=False,
+        )
     else:
         for line in render_verdict(verdict):
             console.print(line)

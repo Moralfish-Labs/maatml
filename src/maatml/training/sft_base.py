@@ -755,6 +755,7 @@ def train_sft(
             "weight_decay": cfg.weight_decay,
             "warmup_steps": warmup_steps,
             "logging_steps": cfg.logging_steps,
+            "disable_tqdm": cfg.disable_tqdm,
             "eval_strategy": "steps" if run_eval_during_training else "no",
             "eval_steps": cfg.eval_steps if run_eval_during_training else None,
             "save_strategy": "steps",

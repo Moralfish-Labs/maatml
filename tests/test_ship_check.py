@@ -111,7 +111,28 @@ def test_different_splits_require_a_replay() -> None:
     assert verdict.ship is False
     assert verdict.population["same"] is False
     assert "different splits" in verdict.reasons[0]
-    assert ship_check(cand, base, gates=GATES, replayed=True).ship is True
+    assert ship_check(cand, base, gates=GATES, replayed=True).ship is False
+
+
+def test_failed_aggregate_without_individual_failures_blocks() -> None:
+    base = _report(metrics={"acc": 0.9, "recall": 0.5})
+    cand = _report(metrics={"acc": 0.95, "recall": 0.6}, gates_passed=False)
+    verdict = ship_check(cand, base, gates=GATES)
+    assert verdict.ship is False
+    assert any("aggregate gate verdict" in reason for reason in verdict.reasons)
+
+
+def test_replay_requires_known_identical_populations_and_matching_floors() -> None:
+    base = _report(metrics={"acc": 0.9, "recall": 0.5})
+    cand = _report(metrics={"acc": 0.95, "recall": 0.6})
+    assert ship_check(cand, base, gates=GATES, replayed=True, gates_benchmark="a" * 64).ship
+    verdict = ship_check(cand, base, gates=GATES, replayed=True, gates_benchmark="b" * 64)
+    assert not verdict.ship
+    assert any("gates_benchmark" in reason for reason in verdict.reasons)
+    for report in (cand, base):
+        report.gates.pop("benchmark_sha256")
+        report.extras.pop("split_sha256")
+    assert not ship_check(cand, base, gates=GATES, replayed=True).ship
 
 
 def test_incomparable_metric_is_named() -> None:
@@ -216,3 +237,22 @@ def test_cli_replay_re_evaluates_both_when_splits_differ(tmp_path: Path, monkeyp
     assert "controlled replay" in result.output
     # The runs' own evidence is untouched.
     assert json.loads((eval_dir / "base.json").read_text())["extras"]["split_sha256"] == "b" * 64
+
+
+def test_cli_checks_configured_floor_population(tmp_path: Path) -> None:
+    mdir = _model_dir(tmp_path)
+    config = mdir / "model.yml"
+    config.write_text(
+        config.read_text().replace(
+            "  predictor: causal_sft",
+            "  gates_benchmark: " + "b" * 64 + "\n  predictor: causal_sft",
+        )
+    )
+    eval_dir = mdir / "output/eval"
+    for name in ("cand", "base"):
+        _report(metrics={"acc": 0.95, "recall": 0.5}).write(eval_dir / f"{name}.json")
+    result = runner.invoke(app, ["ship-check", str(mdir), "cand", "base", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert not payload["ship"]
+    assert any("gates_benchmark" in reason for reason in payload["reasons"])

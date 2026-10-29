@@ -762,6 +762,18 @@ def run_evaluation(
     if not rows:
         raise ValueError(f"No rows in {split_path}")
     split_sha256 = sha256_file(split_path)
+    evaluation_cfg = getattr(model_def, "evaluation", None) if model_def is not None else None
+    declared = evaluation_cfg.get("gates_benchmark") if isinstance(evaluation_cfg, dict) else None
+    population_message = None
+    if enforce_gates and isinstance(declared, str) and declared and declared != split_sha256:
+        population_message = (
+            f"evaluation.gates_benchmark {declared[:16]} is not this split "
+            f"({split_sha256[:16]}); the floors were derived on a different "
+            "population. Reconcile measured baseline evidence or evaluate the "
+            "split the floors came from."
+        )
+        if strict_population:
+            raise GateConfigError(population_message)
     if limit is not None and limit > 0:
         rows = rows[:limit]
 
@@ -1111,22 +1123,10 @@ def run_evaluation(
         # against another split mixes distribution shift into the regression
         # signal, so the mismatch is always recorded and, strictly, refused.
         gates_payload["benchmark_sha256"] = split_sha256
-        evaluation_cfg = getattr(model_def, "evaluation", None) if model_def is not None else None
-        declared = (
-            evaluation_cfg.get("gates_benchmark") if isinstance(evaluation_cfg, dict) else None
-        )
         if isinstance(declared, str) and declared:
             gates_payload["floors_benchmark_sha256"] = declared
-            if declared != split_sha256:
-                message = (
-                    f"evaluation.gates_benchmark {declared[:16]} is not this split "
-                    f"({split_sha256[:16]}); the floors were derived on a different "
-                    "population. Re-derive with `maatml gates derive` or evaluate the "
-                    "split they came from."
-                )
-                if strict_population:
-                    raise GateConfigError(message)
-                console.print(f"[yellow]warning[/] {message}")
+            if population_message:
+                console.print(f"[yellow]warning[/] {population_message}")
                 gates_payload["population_mismatch"] = True
         if gates_payload.get("advisory_failed"):
             console.print(
