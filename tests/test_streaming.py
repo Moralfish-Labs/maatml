@@ -203,8 +203,13 @@ def test_degenerate_group_with_pins_and_benchmark(tmp_path: Path) -> None:
         pins={"val": ["camera:cam7"]},
     )
     seed = [
-        {"sample_id": f"t-{i}", "source": "teacher", "camera": f"cam{i % 8}", "clip": f"c{i}",
-         "request": f"req {i}"}
+        {
+            "sample_id": f"t-{i}",
+            "source": "teacher",
+            "camera": f"cam{i % 8}",
+            "clip": f"c{i}",
+            "request": f"req {i}",
+        }
         for i in range(60)
     ]
     old, new = _both(tmp_path, md, seed)

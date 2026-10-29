@@ -62,8 +62,8 @@ from .pipeline import (
 )
 from .populations import (
     IsolationTally,
-    PopulationError,
     Pin,
+    PopulationError,
     benchmark_version_from_identities,
     check_isolation_tallies,
     resolve_isolation,
@@ -232,7 +232,7 @@ class _Stream:
         self.used_sources: dict[str, int] = {}
         self.unsourced = 0
 
-        self.rows = {name: 0 for name in POPULATIONS}
+        self.rows = dict.fromkeys(POPULATIONS, 0)
         self.chat_first: dict[str, list[str]] = {name: [] for name in POPULATIONS}
         self.chat_total = 0
 
@@ -363,7 +363,7 @@ class _Stream:
         return key
 
     def check_pins_matched(self) -> None:
-        for (pin, _), hits in zip(self.router.pins, self.pin_hits):
+        for (pin, _), hits in zip(self.router.pins, self.pin_hits, strict=True):
             if not hits:
                 raise PopulationError(f"dataset.pins.{pin.population} {pin.label} matches no row")
 
@@ -675,7 +675,9 @@ def _run(
     family_counts = stream.merged("families")
     group_by = stream.group_by
     degenerate_key = dominant
-    pinned = {pin.label: hits for (pin, _), hits in zip(stream.router.pins, stream.pin_hits)}
+    pinned = {
+        pin.label: hits for (pin, _), hits in zip(stream.router.pins, stream.pin_hits, strict=True)
+    }
     counts_by_name = {split.value: n for split, n in split_counts.items()}
     card = _write_dataset_card(
         out,

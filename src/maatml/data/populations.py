@@ -172,7 +172,7 @@ class IsolationTally:
     def __init__(self, isolation: Isolation) -> None:
         self.levels = tuple(sorted(set(isolation.policy.values())))
         self.rows = 0
-        self.missing: dict[str, int] = {level: 0 for level in self.levels}
+        self.missing: dict[str, int] = dict.fromkeys(self.levels, 0)
         self.values: dict[str, set[str]] = {level: set() for level in self.levels}
 
     def add(self, row: dict[str, Any]) -> None:
@@ -197,9 +197,7 @@ def _values(rows: Iterable[dict[str, Any]], field_name: str) -> set[str]:
     return {str(row[field_name]) for row in rows if row.get(field_name) is not None}
 
 
-def check_isolation_tallies(
-    tallies: dict[str, IsolationTally], isolation: Isolation
-) -> list[str]:
+def check_isolation_tallies(tallies: dict[str, IsolationTally], isolation: Isolation) -> list[str]:
     """``check_isolation`` over population tallies instead of row lists."""
     train = tallies.get("train")
     train_values: dict[str, set[str]] = train.values if train is not None else {}

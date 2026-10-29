@@ -5,18 +5,17 @@
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](pyproject.toml)
 [![CI](https://github.com/Moralfish-Labs/maatml/actions/workflows/ci.yml/badge.svg)](https://github.com/Moralfish-Labs/maatml/actions/workflows/ci.yml)
 
-**MaatML** is where a small, task-specific model is built, weighed, and
-packaged, across **text, vision, and vision-language**. One declarative
-`model.yml` drives **prepare → train → evaluate → export → serve**. The runtime
-is where the model answers. Licensed under **Apache-2.0**.
+**Build task-specific models with checks you can inspect.** MaatML prepares
+data, trains models, measures their outputs against task contracts, and packages
+them for inference across **text, vision, and vision-language**. One declarative
+`model.yml` drives **prepare → train → evaluate → export → serve**.
 
 **What makes it different:** correctness is checked *outside* the model by
 **validators**. The same validator gates your synthetic **data** and your
 **evaluation**, and can guard your **live inference**: `maatml serve` runs it
 per request on `/predict?validate=1`, and on every response under `--enforce`,
-where a failing output is rejected with HTTP 422. So a MaatML model ships with a
-contract, not just weights. That validator-gated *data → eval → serving* loop,
-now across modalities, is what general fine-tuning tools leave out.
+where a failing output is rejected with HTTP 422. The contract defines what is
+checked; passing it establishes those checks, not correctness beyond them.
 
 Site: [maatml.pages.dev](https://maatml.pages.dev) ·
 PyPI: [`maatml`](https://pypi.org/project/maatml/) ·
@@ -24,11 +23,13 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The package version is **0.14.0**. This release includes rollout/DAgger
-collection, train-only dataset rows, tool-call chat training and multi-turn
-masking fixes. Upgrade older installations to use these features; see
-[CHANGELOG.md](CHANGELOG.md) for release notes and [ROADMAP.md](ROADMAP.md)
-for remaining work.
+The source package version is **0.14.0**. The repository includes rollout/DAgger
+collection, tool-call chat training, and multi-turn masking. Recent source
+changes add `dataset.train_samples` for corrective examples, stricter
+population checks, separate evaluation output directories, and plain training
+logs. To use the current checkout, install it with `pip install -e ".[ml]"`;
+the version number alone does not establish that a published package contains
+these changes. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
 
 MaatML owns the model lifecycle and its evidence. Model folders own task
 contracts and recipes; an external orchestrator owns remote machines,
@@ -89,8 +90,8 @@ PyPI and point the CLI at the folder. Scaffold a new model folder with
 
 MaatML **builds on** Hugging Face `transformers` / `peft` / `trl` and does the
 one thing those building blocks leave to you: it wraps them in an opinionated,
-validator-gated lifecycle for **small** task-specific models you can train on a
-laptop and deploy to the edge or vLLM.
+validator-gated lifecycle for **small** task-specific models. Train on a suitable
+local device or cloud GPU, then export for the runtime your model supports.
 
 - **Complements** general fine-tuning tools (Axolotl, LLaMA-Factory, Unsloth,
   TRL) rather than competing on scale. Reach for those for large models,
@@ -128,7 +129,7 @@ line; `maatml --debug <command>` prints the traceback.
 | `prepare` | Build `train`/`val`/`test` splits from the seed corpus; enforces `dataset.isolation` / `pins`, records the benchmark version and the corpus lock, checks source sign-offs when `dataset.attribution` is declared |
 | `train` | Fine-tune the model (`--smoke`, `--resume auto\|PATH`, `--set K=V`, `--seeds N`); `training.select_by` picks the checkpoint on val |
 | `sweep` | Offline grid HPO over `--param K=a,b` |
-| `evaluate` | Score a checkpoint; `--gate` exits non-zero on a gate miss, `--cache` keeps per-row predictions, `--batch-size N` feeds a predictor's `predict_batch` in chunks, `--set K=V` overrides model.yml for that evaluate (recorded, never with `--gate`), `--blind` spends the blind manifest once, `--strict-population` refuses floors from another split. The token budget defaults to `packaging.max_input_tokens` |
+| `evaluate` | Score a checkpoint; `--gate` exits non-zero on a gate miss, `--cache` keeps per-row predictions, `--out DIR` separates reports from historical results, `--batch-size N` uses a predictor's `predict_batch` when available, `--set K=V` overrides configuration (never with `--gate`), `--blind` spends the blind manifest once, `--strict-population` refuses mismatched gate populations before inference. The token budget defaults to `packaging.max_input_tokens` |
 | `gates derive` | Floors from a run's report: Wilson 95 % at each metric's own denominator, cluster bootstrap from a cache, `--seed-study`; `--write` rewrites `evaluation.gates` with the derivation beside each floor |
 | `ship-check` | `CANDIDATE BASELINE`: absolute, delta and population verdict in one; `--replay` re-evaluates both over the current test split |
 | `operating-point derive` | Sweep the predictor's `rescore` over a val cache under a budget; `--write` the cut, `--confirm-on-test` spends test once |
@@ -212,6 +213,59 @@ maatml report <model-dir>                               # everything above, from
 for populations, `dataset.attribution` for the licence table every source
 must be signed in, `training.select_by` for checkpoint selection on val.
 [docs/evidence.md](docs/evidence.md) walks through it.
+
+Keep acceptance floors fixed while measuring a corrective candidate. Deriving
+new floors from that candidate is a separate calibration decision, not a way
+to turn a failed experiment into a pass. `ship-check` rejects failed aggregate
+gate evidence, missing or mismatched comparison populations, and a candidate
+population that differs from a declared `evaluation.gates_benchmark`.
+`--replay` must produce reports over the same rows; it does not waive those checks.
+
+## Corrective data without changing the test population
+
+For the `jsonl_seed` format, add reviewed corrective examples through
+`dataset.train_samples` instead of mixing them into the seed population:
+
+```yaml
+dataset:
+  format: jsonl_seed
+  seed_samples: datasets/samples/seed_samples.jsonl
+  train_samples: datasets/samples/corrections.jsonl
+  benchmark_samples: datasets/samples/benchmark.jsonl
+```
+
+Train-only rows enter after the seed split. Preparation checks held-out group
+collisions, applies configured isolation and attribution checks, and records
+the extra input in `corpus.lock.json`. This preserves the seed split assignment;
+keep the seed data, grouping, split settings, and benchmark fixed when comparing
+experiments. Source attribution records provenance, not model quality.
+
+## Cloud training, progress, and recovery
+
+Use the same model folder and CLI on the GPU runtime. Transfer the prepared
+data, plugin, recipe, and any local base checkpoint before running:
+
+```bash
+maatml validate <model-dir>
+maatml train <model-dir> --device cuda \
+  --set training.logging_steps=1 --set training.disable_tqdm=true
+# After an interruption, resume from a saved training checkpoint:
+maatml train <model-dir> --device cuda --resume auto \
+  --set training.logging_steps=1 --set training.disable_tqdm=true
+maatml evaluate <model-dir> --checkpoint RUN --cache --out <report-dir>
+maatml runs <model-dir> --pack RUN
+```
+
+`disable_tqdm` replaces the SFT progress bar with ordinary Trainer log records;
+`logging_steps` controls their frequency. Evaluation prints row progress and
+estimated time remaining. Set `PYTHONUNBUFFERED=1` when an external orchestrator
+streams Python output. Resume requires a saved checkpoint; work since the last
+save may need to run again.
+
+The orchestrator provisions and stops the GPU, streams logs, and transfers
+checkpoints. On the receiving machine, `maatml runs <model-dir> --adopt BUNDLE`
+imports the completed run and its evidence. A completed training run does not
+by itself establish an acceptance or release pass.
 
 ## Batch scripts
 
