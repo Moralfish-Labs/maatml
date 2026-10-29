@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maatml"
-version = "0.14.0"
+version = "0.15.0"
 description = "Where a small task-specific model is built, weighed, and packaged: one validator-gated lifecycle from data to export for text, vision, and vision-language models"
 readme = "README.md"
 keywords = [

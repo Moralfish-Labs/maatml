@@ -23,13 +23,11 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The source package version is **0.14.0**. The repository includes rollout/DAgger
-collection, tool-call chat training, and multi-turn masking. Recent source
-changes add `dataset.train_samples` for corrective examples, stricter
-population checks, separate evaluation output directories, and plain training
-logs. To use the current checkout, install it with `pip install -e ".[ml]"`;
-the version number alone does not establish that a published package contains
-these changes. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
+The package version is **0.15.0**. This version adds streaming preparation,
+`dataset.train_samples` for corrective examples, stricter population checks,
+separate evaluation output directories, and plain training logs. It also
+includes rollout/DAgger collection, tool-call chat training, and multi-turn
+masking. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
 
 MaatML owns the model lifecycle and its evidence. Model folders own task
 contracts and recipes; an external orchestrator owns remote machines,

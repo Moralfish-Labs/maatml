@@ -8,6 +8,35 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-29
+
+### Added
+
+- Streaming preparation API (`prepare_stream`) consumes rows incrementally,
+  retaining counters and digests for isolation, attribution and benchmark
+  checks. Refused preparation preserves the previous prepared output.
+- `dataset.train_samples` admits corrective JSONL examples into training
+  after seed splitting, checks held-out group collisions, and records the
+  additional input in the corpus lock.
+- `maatml evaluate --out DIR` writes reports and prediction caches separately
+  from historical evaluation output.
+- `training.disable_tqdm` enables plain SFT Trainer logs for streamed output.
+
+### Fixed
+
+- Strict evaluation rejects mismatched gate populations before loading the
+  predictor. Ship checks reject failed aggregate gate evidence and require
+  matching comparison populations even after replay; configured floors remain
+  bound to `evaluation.gates_benchmark`.
+- Transformers model loading uses `dtype` instead of deprecated `torch_dtype`.
+- Ship-check JSON output avoids Rich wrapping and markup interpretation.
+- Streaming preparation passes Ruff lint, formatting and strict zip checks.
+
+### Documentation
+
+- Refreshed the README with corrective data, cloud training, progress,
+  checkpoint recovery and the limits of validator-based acceptance claims.
+
 ## [0.14.0] - 2026-10-13
 
 ### Changed

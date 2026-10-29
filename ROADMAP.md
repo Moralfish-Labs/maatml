@@ -31,8 +31,8 @@ does not belong in them.
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
 
-Current package version: **0.14.0**. Rollouts, train-only rows and tool-call
-chat training are released. Historical tranches below describe completed work;
+Current package version: **0.15.0**. Streaming preparation, corrective training
+inputs, population safeguards, rollouts and tool-call chat training are released. Historical tranches below describe completed work;
 they are not the current task queue.
 
 | Tranche | Theme | Status |

@@ -69,8 +69,8 @@ validators, and metrics.
 
 ## Release boundary
 
-These docs describe **0.14.0**, including rollouts, train-only rows, tool-call
-chat training and corrected multi-turn masking. Upgrade older installations
+These docs describe **0.15.0**, including streaming preparation, corrective
+train-only inputs, population safeguards, rollouts and tool-call chat training. Upgrade older installations
 to use these features. The repository changelog distinguishes shipped releases
 from future Unreleased work.
 Model recipes and task plugins remain independent of the framework, while
