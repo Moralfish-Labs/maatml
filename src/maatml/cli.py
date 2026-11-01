@@ -1339,6 +1339,36 @@ def cmd_mint(
         )
 
 
+@app.command("snapshot")
+def cmd_snapshot(
+    model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    started_after: Path = typer.Option(..., exists=True, dir_okay=False),
+    writer_lock: Path = typer.Option(...),
+    min_step: int = typer.Option(..., min=1),
+    out: Path = typer.Option(...),
+) -> None:
+    """Wait for and snapshot a complete policy checkpoint for external backup.
+
+    Requires the policy trainer's training_state.pt completion protocol. Does
+    not stop training, upload data, deserialize optimizer state or weaken gates.
+    """
+    from .portable import BundleError
+    from .snapshot import snapshot_checkpoint
+
+    try:
+        result = snapshot_checkpoint(
+            load_model_def(model_dir),
+            started_after=started_after,
+            writer_lock=writer_lock,
+            min_step=min_step,
+            out=out,
+        )
+    except (BundleError, OSError, ValueError) as exc:
+        console.print(f"[red]snapshot refused[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]snapshot ready[/] {result}")
+
+
 @app.command("runs")
 def cmd_runs(
     model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
