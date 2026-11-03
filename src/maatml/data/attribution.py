@@ -283,11 +283,16 @@ def write_corpus_lock(
     prepared_dir: Path,
     *,
     files: Sequence[Path],
+    asset_files: Sequence[Path] = (),
     attribution_path: Optional[Path],
     check: Optional[SourceCheck],
     field: str = DEFAULT_ATTRIBUTION_FIELD,
 ) -> Path:
-    """Record what entered prepare: input files by hash, the table rows used, the risk accepted."""
+    """Lock row files and supporting assets without parsing assets as JSONL.
+
+    Only row files receive a row count. Assets retain their complete byte hash,
+    so a changed tool schema, prompt or review changes the corpus lock too.
+    """
     file_entries = []
     for path in files:
         path = Path(path)
@@ -300,6 +305,11 @@ def write_corpus_lock(
                 "rows": sum(1 for _ in iter_jsonl(path)),
             }
         )
+    for path in asset_files:
+        path = Path(path)
+        if not path.is_file():
+            raise AttributionError(f"Corpus supporting asset not found: {path}")
+        file_entries.append({"path": str(path), "sha256": sha256_file(path), "kind": "asset"})
     sources = []
     if check is not None:
         for name in sorted(check.used):

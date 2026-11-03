@@ -58,6 +58,31 @@ does not import it.
 > use `maatml validate --no-plugins` to check schema and paths without importing
 > plugin code.
 
+## Per-prediction evidence
+
+A predictor may implement `prediction_context(row) -> dict` to expose host-side
+observations, such as retrieval receipts, separately from its generated text.
+The evaluation harness calls it immediately after `predict(row)` and snapshots
+finite JSON values. This hook requires `batch_size: 1`; a batched predictor with
+the hook is rejected before generation because a single last-result trace cannot
+unambiguously describe a batch.
+
+A validator explicitly opts in with a named `prediction_context` parameter:
+
+```python
+def validate(text, *, user_prompt=None, schema_path=None, prediction_context=None):
+    # Validate the answer against observed evidence, not row-supplied claims.
+    ...
+```
+
+Existing validator signatures remain supported. Accepting `**kwargs` alone does
+not opt in. The validator receives its own copy; mutations do not overwrite the
+snapshot available to metrics as `RowEval.prediction_context` or saved beside
+the output in `evaluate --cache`. This top-level cache field is distinct from
+any similarly named field inside the original dataset row. Missing context is
+an empty dictionary, not proof of successful retrieval. Task plugins remain
+responsible for checking receipt identity, grounding and answer correctness.
+
 ## Generators (`maatml datagen`)
 
 A generator is a factory:

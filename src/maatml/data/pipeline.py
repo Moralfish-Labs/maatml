@@ -365,6 +365,7 @@ def prepare_rows(
     sanitize_applied: Optional[list[str]] = None,
     blind_rows: Optional[list[dict]] = None,
     input_files: Optional[Sequence[Path]] = None,
+    input_assets: Sequence[Path] = (),
     train_rows: Optional[list[dict]] = None,
 ) -> dict:
     """Split already-loaded rows and write train/val/test + dataset card.
@@ -386,7 +387,8 @@ def prepare_rows(
 
     With ``dataset.attribution`` declared every row's ``source`` must hold a
     signed entry; the corpus lock records ``input_files`` (the seed,
-    benchmark and blind files as they were read) by sha256.
+    benchmark and blind files as they were read) by sha256. ``input_assets``
+    locks non-row evidence without interpreting it as JSONL.
     """
     cfg = get_dataset_cfg(model_def)
     _check_chat_rows(
@@ -545,6 +547,7 @@ def prepare_rows(
     lock = write_corpus_lock(
         out,
         files=lock_files,
+        asset_files=input_assets,
         attribution_path=attribution_path,
         check=source_check,
         field=attribution_field,

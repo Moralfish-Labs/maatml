@@ -11,11 +11,13 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .config import ModelDefinition
 from .environment import environment_manifest
 from .portable import BUNDLE_KIND, MANIFEST, BundleError
 from .runs import RunRecord, list_runs, spec_fingerprint
+from .training.checkpoint_snapshot import READY_FILE, verify_sft_checkpoint
 from .utils.io import sha256_file
 
 
@@ -43,8 +45,9 @@ def snapshot_checkpoint(
     poll_seconds: float = 2.0,
     startup_seconds: float = 120.0,
 ) -> Path:
-    """Wait for a complete policy checkpoint, then atomically publish its bundle.
+    """Wait for a complete native checkpoint, then atomically publish its bundle.
 
+    Opted-in SFT trainers publish a hash-bound readiness marker after on_save.
     The policy trainer publishes training_state.pt last and never modifies a
     completed checkpoint. Copying first isolates the archive from log updates
     and checkpoint pruning. No model or optimizer files are deserialized here.
@@ -84,15 +87,22 @@ def snapshot_checkpoint(
             if (
                 suffix.isdigit()
                 and int(suffix) >= min_step
-                and (checkpoint / "training_state.pt").is_file()
-                and (checkpoint / "model.safetensors").is_file()
-                and (checkpoint / "config.json").is_file()
+                and (
+                    (
+                        (checkpoint / "training_state.pt").is_file()
+                        and (checkpoint / "model.safetensors").is_file()
+                        and (checkpoint / "config.json").is_file()
+                    )
+                    or (checkpoint / READY_FILE).is_file()
+                )
             ):
-                candidates.append((int(suffix), checkpoint))
+                candidates.append((int(suffix), checkpoint, (checkpoint / READY_FILE).is_file()))
         if candidates:
-            step, checkpoint = max(candidates)
+            step, checkpoint, is_sft = max(candidates)
             try:
-                return _publish(model_def, record, run_dir, checkpoint, step, out)
+                if is_sft:
+                    verify_sft_checkpoint(checkpoint, step, fingerprint)
+                return _publish(model_def, record, run_dir, checkpoint, step, out, is_sft)
             except FileNotFoundError:
                 # A checkpoint may be pruned during the copy. Never publish a
                 # partial archive; retry against the next complete checkpoint.
@@ -109,6 +119,7 @@ def _publish(
     checkpoint: Path,
     step: int,
     out: Path,
+    is_sft: bool,
 ) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=out.parent) as scratch:
@@ -124,7 +135,16 @@ def _publish(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
             entries.append(("run/" + relative.as_posix(), target))
-        manifest = {
+        copied_checkpoint = root / "run" / checkpoint.name
+        if is_sft:
+            if record.spec_hash is None:
+                raise BundleError("SFT snapshot requires a native recipe fingerprint")
+            verify_sft_checkpoint(copied_checkpoint, step, record.spec_hash)
+        else:
+            for name in ("training_state.pt", "model.safetensors", "config.json"):
+                if not (copied_checkpoint / name).is_file():
+                    raise FileNotFoundError(copied_checkpoint / name)
+        manifest: dict[str, Any] = {
             "kind": BUNDLE_KIND,
             "run_id": record.run_id,
             "identity": model_def.identity,

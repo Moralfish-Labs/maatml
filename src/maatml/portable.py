@@ -102,7 +102,10 @@ def pack_run(
     target = bundle_path(model_def, run_id, out)
     target.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
-    with tarfile.open(target, "w:gz") as tar:
+    # Model tensors gain little from expensive maximum-level gzip compression.
+    # Keep the portable format and per-file integrity checks while making backups
+    # practical within a billed training runtime's shutdown window.
+    with tarfile.open(target, "w:gz", compresslevel=1) as tar:
         info = tarfile.TarInfo(MANIFEST)
         info.size = len(body)
         tar.addfile(info, io.BytesIO(body))

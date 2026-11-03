@@ -42,11 +42,12 @@ def prediction_row(
     result: Any,
     latency_ms: float,
     drop_fields: Iterable[str] = (),
+    prediction_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One cache line: the row minus its request payload, plus the verdict."""
     dropped = set(drop_fields)
     kept = {k: v for k, v in row.items() if k not in dropped}
-    return {
+    cached = {
         "sample_id": row.get("sample_id"),
         "row": kept,
         "output": gen_text,
@@ -59,6 +60,9 @@ def prediction_row(
         "parsed": _json_safe(getattr(result, "parsed", None)),
         "latency_ms": float(latency_ms),
     }
+    if prediction_context:
+        cached["prediction_context"] = json.loads(json.dumps(prediction_context, allow_nan=False))
+    return cached
 
 
 def write_predictions(

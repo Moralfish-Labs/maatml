@@ -616,6 +616,8 @@ def train_sft(
 
     dataset_dir = Path(dataset_dir) if dataset_dir else model_def.prepared_dir
     target_device, profile, distributed = resolve_training_placement(device)
+    if cfg.checkpoint_snapshots and distributed:
+        raise ValueError("SFT checkpoint snapshots currently require a single process")
 
     run, out_dir, resume_path = begin_training_run(
         model_def,
@@ -781,6 +783,14 @@ def train_sft(
             args_kwargs["group_by_length"] = bool(cfg.group_by_length)
         args = TrainingArguments(**args_kwargs)
 
+        callbacks = [make_nan_guard_callback(), make_cache_release_callback(profile)]
+        if cfg.checkpoint_snapshots:
+            from .checkpoint_snapshot import make_snapshot_ready_callback
+
+            if run.spec_hash is None:
+                raise ValueError("SFT snapshot requires a native recipe fingerprint")
+            callbacks.append(make_snapshot_ready_callback(run.spec_hash))
+
         trainer = Trainer(
             model=model,
             args=args,
@@ -788,11 +798,7 @@ def train_sft(
             eval_dataset=val_ds if run_eval_during_training else None,
             data_collator=collator,
             processing_class=tokenizer,
-            callbacks=[
-                make_nan_guard_callback(),
-                # The allocator is released during the run, not only after it.
-                make_cache_release_callback(profile),
-            ],
+            callbacks=callbacks,
         )
 
         train_output = trainer.train(
@@ -842,6 +848,6 @@ def train_sft(
                 else 0.0
             ),
         )
-    except Exception as exc:
-        finish_run(model_def, run.run_id, "aborted", error=str(exc))
+    except (Exception, KeyboardInterrupt) as exc:
+        finish_run(model_def, run.run_id, "aborted", error=str(exc) or type(exc).__name__)
         raise

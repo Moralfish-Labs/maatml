@@ -96,6 +96,7 @@ class SFTTrainConfig(BaseModel):
     grad_checkpointing: bool = False
     eval_steps: int = 9999
     save_steps: int = 200
+    checkpoint_snapshots: bool = False
     logging_steps: int = 20
     disable_tqdm: bool = False
     max_steps: int = -1

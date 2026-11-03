@@ -8,6 +8,9 @@ hardcoded repo-relative fallback.
 
 from __future__ import annotations
 
+import copy
+import inspect
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,6 +275,22 @@ class RowEval:
     gen_text: str
     result: ValidationResult
     latency_ms: float = 0.0
+    prediction_context: dict[str, Any] = field(default_factory=dict)
+
+
+def _prediction_context(predictor: Any, row: dict) -> dict[str, Any]:
+    """Snapshot predictor-owned evidence immediately after its prediction."""
+    context_fn = getattr(predictor, "prediction_context", None)
+    if not callable(context_fn):
+        return {}
+    context = context_fn(row)
+    if not isinstance(context, dict):
+        raise ValueError("prediction_context(row) must return a JSON object")
+    try:
+        # Do not keep aliases to the predictor's mutable state or permit NaN.
+        return json.loads(json.dumps(context, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("prediction_context(row) must contain finite JSON values") from exc
 
 
 @dataclass
@@ -844,6 +863,14 @@ def run_evaluation(
         )
 
     validate_fn: Callable[..., ValidationResult] = resolve_validator(validator)
+    try:
+        context_parameter = inspect.signature(validate_fn).parameters.get("prediction_context")
+    except (TypeError, ValueError):
+        context_parameter = None
+    accepts_prediction_context = context_parameter is not None and context_parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
     # A real validator (name or callable) needs a schema when declared; the
     # noop path does not. Contracts are optional and task-specific.
     if validator is not None and resolved_schema is None:
@@ -877,6 +904,8 @@ def run_evaluation(
             "predict_batch(rows); evaluating one row at a time"
         )
         batch_size = 1
+    if batch_size > 1 and callable(getattr(pred_obj, "prediction_context", None)):
+        raise ValueError("prediction_context(row) requires batch_size=1 to bind each observation")
 
     def _sync() -> None:
         if target_device.type == "mps":
@@ -911,11 +940,12 @@ def run_evaluation(
                     )
             else:
                 outputs = [predict(chunk[0])]
+            contexts = [_prediction_context(pred_obj, row) for row in chunk]
             _sync()
             per_row = (time.perf_counter() - t0) * 1000.0 / len(chunk)
-            yield start + len(chunk), chunk, outputs, per_row
+            yield start + len(chunk), chunk, outputs, contexts, per_row
 
-    for last_index, chunk, outputs, elapsed in _chunks():
+    for last_index, chunk, outputs, contexts, elapsed in _chunks():
         timings.extend([elapsed] * len(chunk))
         index = last_index
 
@@ -931,24 +961,31 @@ def run_evaluation(
                 f"(mean {mean_s:.1f}s)  ~{left_s / 60.0:.0f}m left"
             )
 
-        for row, gen_text in zip(chunk, outputs, strict=True):
+        for row, gen_text, context in zip(chunk, outputs, contexts, strict=True):
             user_prompt = row.get(request_field)
             if not isinstance(user_prompt, str):
                 # Fall back to classic text field when request_field is an image path.
                 alt = row.get("request")
                 user_prompt = alt if isinstance(alt, str) else None
 
-            if resolved_schema is None and resolved_contracts is None:
-                result = validate_fn(gen_text, user_prompt=user_prompt)
-            else:
-                kwargs: dict[str, Any] = {"user_prompt": user_prompt}
-                if resolved_schema is not None:
-                    kwargs["schema_path"] = resolved_schema
-                if resolved_contracts is not None:
-                    kwargs["contracts_path"] = resolved_contracts
-                result = validate_fn(gen_text, **kwargs)
+            kwargs: dict[str, Any] = {"user_prompt": user_prompt}
+            if resolved_schema is not None:
+                kwargs["schema_path"] = resolved_schema
+            if resolved_contracts is not None:
+                kwargs["contracts_path"] = resolved_contracts
+            if accepts_prediction_context:
+                # Validators opt in by naming the argument; their mutations
+                # cannot rewrite the evidence retained for metrics and caches.
+                kwargs["prediction_context"] = copy.deepcopy(context)
+            result = validate_fn(gen_text, **kwargs)
 
-            item = RowEval(row=row, gen_text=gen_text, result=result, latency_ms=elapsed)
+            item = RowEval(
+                row=row,
+                gen_text=gen_text,
+                result=result,
+                latency_ms=elapsed,
+                prediction_context=context,
+            )
             row_results.append(item)
 
             if not result.ok and len(failures) < failures_to_keep:
@@ -1101,6 +1138,7 @@ def run_evaluation(
                     result=item.result,
                     latency_ms=item.latency_ms,
                     drop_fields=(request_field, "request"),
+                    prediction_context=item.prediction_context,
                 )
                 for item in row_results
             ),
