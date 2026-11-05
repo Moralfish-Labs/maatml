@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import tarfile
 from pathlib import Path
 
@@ -128,7 +129,8 @@ def test_pruning_race_does_not_replace_previous_good_bundle(tmp_path, monkeypatc
 def test_cli_exposes_native_snapshot_command():
     result = CliRunner().invoke(app, ["snapshot", "--help"])
     assert result.exit_code == 0
-    assert "--min-step" in result.output
+    # CI terminals get Rich styling, which splits option names with ANSI codes.
+    assert "--min-step" in re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.output)
 
 
 def test_waits_for_atomic_optimizer_completion(tmp_path, monkeypatch):
