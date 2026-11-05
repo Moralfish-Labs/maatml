@@ -36,7 +36,8 @@ for the Python package and per-model versions under `examples/`.
 - An interrupted SFT run (`KeyboardInterrupt`) is recorded as aborted instead
   of being left open.
 - The snapshot CLI help test strips Rich styling, which split option names on
-  CI terminals.
+  CI terminals. Live SFT snapshot tests skip on Windows, where snapshots are
+  refused because they need POSIX writer locks.
 
 ## [0.15.0] - 2026-10-29
 

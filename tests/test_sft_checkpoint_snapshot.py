@@ -1,6 +1,7 @@
 """SFT readiness is published after saves and checked across snapshot copies."""
 
 import json
+import os
 import tarfile
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from maatml.training.checkpoint_snapshot import (
     verify_sft_checkpoint,
 )
 from maatml.training.sft_config import SFTTrainConfig
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX writer-lock protocol")
 
 
 def checkpoint(tmp_path):
@@ -73,6 +76,7 @@ def test_changed_completion_is_rejected(tmp_path, fault):
         verify_sft_checkpoint(path, 2, "wrong" if fault == "recipe" else "recipe")
 
 
+@posix_only
 def test_native_snapshot_preserves_adapter_optimizer_and_completion(tmp_path, monkeypatch):
     from test_snapshot import call, fixture
 
@@ -155,6 +159,7 @@ def test_real_cpu_trainer_publishes_only_completed_resumable_saves(tmp_path):
     assert all(int(value["step"]) == 3 for value in optimizer["state"].values())
 
 
+@posix_only
 @pytest.mark.parametrize("sft", [False, True])
 def test_prune_before_enumeration_preserves_previous_backup(tmp_path, monkeypatch, sft):
     import shutil
