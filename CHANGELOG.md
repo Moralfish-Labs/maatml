@@ -8,6 +8,36 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-05
+
+### Added
+
+- `maatml snapshot` waits for a complete policy checkpoint at or after
+  `--min-step` and writes a portable bundle for external backup. It does not
+  stop training, upload data or deserialize optimizer state.
+- `training.checkpoint_snapshots` publishes hash-bound completion evidence
+  beside each saved single-process SFT checkpoint, so a snapshot never captures
+  a checkpoint the trainer is still writing.
+- Predictors may implement `prediction_context(row)` to expose host-side
+  evidence, such as retrieval receipts, separately from generated text.
+  Validators opt in with a named `prediction_context` parameter, and
+  `evaluate --cache` saves the snapshot beside each prediction.
+- The corpus lock records supporting input assets by hash without parsing them
+  as JSONL, so a changed tool schema or prompt changes the lock.
+
+### Changed
+
+- Portable bundles use gzip level 1, which keeps the format and per-file
+  integrity checks while making checkpoint backups fast enough for a billed
+  runtime's shutdown window.
+
+### Fixed
+
+- An interrupted SFT run (`KeyboardInterrupt`) is recorded as aborted instead
+  of being left open.
+- The snapshot CLI help test strips Rich styling, which split option names on
+  CI terminals.
+
 ## [0.15.0] - 2026-10-29
 
 ### Added

@@ -23,11 +23,12 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The package version is **0.15.0**. This version adds streaming preparation,
-`dataset.train_samples` for corrective examples, stricter population checks,
-separate evaluation output directories, and plain training logs. It also
-includes rollout/DAgger collection, tool-call chat training, and multi-turn
-masking. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
+The package version is **0.16.0**. This version adds `maatml snapshot` for
+durable checkpoint backups, SFT checkpoint completion evidence, and
+per-prediction evidence for validators. It also includes streaming
+preparation, `dataset.train_samples` for corrective examples, stricter
+population checks, rollout/DAgger collection, tool-call chat training, and
+multi-turn masking. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
 
 MaatML owns the model lifecycle and its evidence. Model folders own task
 contracts and recipes; an external orchestrator owns remote machines,

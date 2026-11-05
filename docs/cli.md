@@ -2,7 +2,7 @@
 
 Run `maatml --version` to identify the installed package and
 `maatml COMMAND --help` for its full option list. These docs describe
-**0.15.0**, including corrective training inputs and evaluation population safeguards. `maatml --debug COMMAND` includes tracebacks for input errors.
+**0.16.0**, including checkpoint snapshots, corrective training inputs and evaluation population safeguards. `maatml --debug COMMAND` includes tracebacks for input errors.
 
 Most commands take a folder containing `model.yml`. Paths declared in that
 file resolve relative to the model folder. Replace placeholders such as
