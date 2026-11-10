@@ -412,12 +412,20 @@ extensions:
     llama_cpp_tag: b9829
     convert_script: null      # or a path; never searched on PATH
     quantize_binary: null
+    mmproj: false            # opt in to a separate f16 multimodal companion
 ```
 
 maatml never searches `PATH` for the llama.cpp convert script or quantize
 binary — that would execute whatever `convert.py` happened to be found first.
 Name them explicitly here or via `MAATML_LLAMA_CONVERT` /
 `MAATML_LLAMA_QUANTIZE`, otherwise `--format gguf` produces no GGUF.
+
+Set `extensions.gguf.mmproj: true` to also invoke the explicit converter with
+`--mmproj --outtype f16`. A failed or missing companion fails the export. The
+`mmproj-<name>.gguf` file is included in `manifest.json` and checked by
+`maatml verify`. Language quantization levels do not quantize the companion.
+The source checkpoint must already contain the modality weights and processor
+assets. Conversion does not establish inference support or answer quality.
 
 Prefer **Q5_K_M over Q4_K_M** for anything citation-shaped: quantization costs
 citation fidelity specifically, and an aggregate pass rate hides it.

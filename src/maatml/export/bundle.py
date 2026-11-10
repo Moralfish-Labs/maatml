@@ -29,6 +29,7 @@ _CONFIG_NAMES = (
     # Multimodal processor assets (VLM checkpoints; needed for vLLM serving).
     "preprocessor_config.json",
     "processor_config.json",
+    "video_preprocessor_config.json",
     "chat_template.json",
     "chat_template.jinja",
 )
