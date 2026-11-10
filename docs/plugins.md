@@ -144,6 +144,27 @@ Core stays the only writer, so a hook cannot half-create a folder. Ship the
 same schema and prompt spec your validator and generator were written against:
 a lookalike copy makes `maatml datagen` reject every row it generates.
 
+## Processor-aware SFT trainers
+
+A plugin-owned trainer can reuse `maatml.training.sft_base.train_sft` with
+`data_collator_factory=MyCollator`. The factory receives `(model_def, processor,
+training_config)` and returns a callable over raw prepared rows. This opts into
+revision-pinned `AutoProcessor` and `AutoModelForImageTextToText` loading. The
+plugin owns media decoding, asset hash verification, assistant loss masks,
+padding and expanded-token budget checks. Media rows bypass the text token cache.
+
+The shared Trainer still owns optimization, resume, callbacks and run records.
+It receives the processor as `processing_class`, preserving processor assets in
+intermediate and final saves. `training.frozen_module_prefixes` optionally names
+model submodules that must remain frozen: trainable parameters or changed tensor
+bytes, including persistent buffers, abort the run. Hashes are recorded in final
+run metadata. Submodule paths must exist before LoRA is attached; freezing and
+correct target selection remain the trainer's responsibility.
+
+A plugin-owned architecture can register an exporter name that delegates to a
+shared exporter, as other plugin formats do. Register an explicit name for GGUF;
+the built-in `gguf` format remains restricted to its supported architectures.
+
 ## Exporters (`maatml export`)
 
 Built-ins: `safetensors`, `gguf` / `mlx` (optional tooling). The vision example

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Optional, Type
+from typing import Any, Callable, Optional, Type
 
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
@@ -573,6 +573,7 @@ def train_sft(
     resume: Optional[str] = None,
     trial: Optional[dict[str, Any]] = None,
     log_label: str = "SFT",
+    data_collator_factory: Optional[Callable[..., Any]] = None,
 ) -> SFTTrainResult:
     """The shared SFT training driver. Each task module is a thin wrapper
     that pins `target_field`, `request_field`, and `default_prompt_spec`.
@@ -647,7 +648,15 @@ def train_sft(
             + (f" quant={cfg.quantization.enabled()}" if cfg.quantization else "")
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+        processor = None
+        if data_collator_factory is not None:
+            from transformers import AutoProcessor
+
+            processor = AutoProcessor.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+            tokenizer = processor.tokenizer
+            collator = data_collator_factory(model_def, processor, cfg)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
 
@@ -666,7 +675,12 @@ def train_sft(
             # fitting in unified memory and swapping.
             frozen_base=bool(cfg.lora and cfg.lora.enabled),
         )
-        model = AutoModelForCausalLM.from_pretrained(cfg.model_id, **load_kwargs)
+        model_class: Any = AutoModelForCausalLM
+        if processor is not None:
+            from transformers import AutoModelForImageTextToText
+
+            model_class = AutoModelForImageTextToText
+        model = model_class.from_pretrained(cfg.model_id, **load_kwargs)
         model = maybe_prepare_kbit(model, quant)
         ensure_tokenizer_model_contract(
             model,
@@ -680,7 +694,11 @@ def train_sft(
             model.generation_config.pad_token_id = tokenizer.pad_token_id
             model.generation_config.bos_token_id = tokenizer.bos_token_id
             model.generation_config.eos_token_id = tokenizer.eos_token_id
+        from .frozen import FrozenComponents, make_frozen_guard_callback
+
+        frozen = FrozenComponents(model, cfg.frozen_module_prefixes)
         model = _maybe_attach_lora(model, cfg.lora)
+        frozen.verify()
 
         train_file = dataset_dir / "train.jsonl"
         val_file = dataset_dir / "val.jsonl"
@@ -716,18 +734,20 @@ def train_sft(
                 user_placeholder=user_placeholder,
             )
 
-        train_tok = _load_or_build_tokenized_cache(train_rows, train_cache, _tok)
-        val_tok = _load_or_build_tokenized_cache(val_rows, val_cache, _tok) if val_rows else []
-
-        collator = SFTDataCollator(
-            tokenizer,
-            prompt_spec,
-            max_length=cfg.max_input_tokens,
-            target_field=target_field,
-            request_field=request_field,
-            user_placeholder=user_placeholder,
-            pretokenized=True,
-        )
+        if processor is None:
+            train_tok = _load_or_build_tokenized_cache(train_rows, train_cache, _tok)
+            val_tok = _load_or_build_tokenized_cache(val_rows, val_cache, _tok) if val_rows else []
+            collator = SFTDataCollator(
+                tokenizer,
+                prompt_spec,
+                max_length=cfg.max_input_tokens,
+                target_field=target_field,
+                request_field=request_field,
+                user_placeholder=user_placeholder,
+                pretokenized=True,
+            )
+        else:
+            train_tok, val_tok = train_rows, val_rows
         train_ds = _ListDataset(train_tok)
         val_ds = _ListDataset(val_tok) if val_tok else None
 
@@ -784,6 +804,8 @@ def train_sft(
         args = TrainingArguments(**args_kwargs)
 
         callbacks = [make_nan_guard_callback(), make_cache_release_callback(profile)]
+        if cfg.frozen_module_prefixes:
+            callbacks.append(make_frozen_guard_callback(frozen))
         if cfg.checkpoint_snapshots:
             from .checkpoint_snapshot import make_snapshot_ready_callback
 
@@ -797,7 +819,7 @@ def train_sft(
             train_dataset=train_ds,
             eval_dataset=val_ds if run_eval_during_training else None,
             data_collator=collator,
-            processing_class=tokenizer,
+            processing_class=processor if processor is not None else tokenizer,
             callbacks=callbacks,
         )
 
@@ -810,14 +832,16 @@ def train_sft(
             profile.empty_cache()
             eval_metrics = trainer.evaluate(eval_dataset=val_ds) or {}
 
+        frozen.verify()
         save_meta = _save_sft_artifacts(
             model,
-            tokenizer,
+            processor if processor is not None else tokenizer,
             out_dir,
             save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
             base_model_id=cfg.model_id,
             spec_path=spec_path,
         )
+        frozen.verify()
 
         metrics_out = {k: float(v) for k, v in eval_metrics.items() if isinstance(v, (int, float))}
         write_run_metadata(
@@ -834,6 +858,8 @@ def train_sft(
                 "profile": profile.name,
                 "distributed": distributed,
                 "model_revision": cfg.model_revision,
+                "processor_class": type(processor).__name__ if processor is not None else None,
+                "frozen_component_sha256": frozen.hashes,
                 **save_meta,
             },
         )

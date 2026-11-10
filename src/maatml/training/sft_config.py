@@ -107,6 +107,7 @@ class SFTTrainConfig(BaseModel):
     attn_implementation: Optional[str] = None
     dataloader_workers: Optional[int] = None
     model_revision: Optional[str] = None
+    frozen_module_prefixes: list[str] = Field(default_factory=list)
     # save_total_limit: how many checkpoint-* dirs survive for select_by to compare.
     keep_checkpoints: int = Field(default=2, ge=1)
 

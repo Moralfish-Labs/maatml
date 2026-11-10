@@ -399,6 +399,11 @@ machines; merge locally before exporting GGUF.
 
 ## Packaging and extensions
 
+For processor-aware plugin trainers, `training.frozen_module_prefixes` lists
+submodule paths whose parameters and persistent buffers must remain unchanged.
+The shared SFT driver rejects trainable or changed frozen components and records
+their hashes. See the [plugin guide](../../plugins.md#processor-aware-sft-trainers).
+
 ```yaml
 packaging:
   max_input_tokens: 8192      # the budget eval, serve and export --parity share
