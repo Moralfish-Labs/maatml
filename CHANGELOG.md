@@ -8,6 +8,30 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-11
+
+### Added
+
+- Processor-aware SFT trainers: a plugin-owned trainer can call `train_sft`
+  with `data_collator_factory`, which opts into revision-pinned `AutoProcessor`
+  and `AutoModelForImageTextToText` loading. The plugin owns media decoding,
+  loss masks and padding; the shared Trainer keeps optimization, resume,
+  callbacks and run records, and saves processor assets with each checkpoint.
+- `training.frozen_module_prefixes` names submodules that must stay frozen.
+  Trainable parameters or changed tensor bytes there, persistent buffers
+  included, abort the run, and the hashes are recorded in the run metadata.
+- `extensions.gguf.mmproj: true` also exports an f16 multimodal companion
+  (`mmproj-<name>.gguf`) through the explicit converter. It is listed in
+  `manifest.json` and checked by `maatml verify`; a failed or missing
+  companion fails the export.
+
+### Fixed
+
+- `scripts/check_chat_masks.py` takes its tool-call and turn-end tags from the
+  tokenizer's chat template (ChatML or Gemma 4) instead of assuming ChatML, so
+  Gemma 4 tool-call rows are no longer reported as span failures. For an
+  unknown template the two tag checks are skipped with a note.
+
 ## [0.16.0] - 2026-11-05
 
 ### Added

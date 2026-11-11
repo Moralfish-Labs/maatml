@@ -23,10 +23,10 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The package version is **0.16.0**. This version adds `maatml snapshot` for
-durable checkpoint backups, SFT checkpoint completion evidence, and
-per-prediction evidence for validators. It also includes streaming
-preparation, `dataset.train_samples` for corrective examples, stricter
+The package version is **0.17.0**. This version adds processor-aware SFT
+trainers for plugin-owned multimodal recipes, frozen-component checks, and
+multimodal GGUF companions. It also includes `maatml snapshot` checkpoint
+backups, per-prediction evidence, streaming preparation, `dataset.train_samples` for corrective examples, stricter
 population checks, rollout/DAgger collection, tool-call chat training, and
 multi-turn masking. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
 

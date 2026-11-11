@@ -69,8 +69,8 @@ validators, and metrics.
 
 ## Release boundary
 
-These docs describe **0.16.0**, including checkpoint snapshots, per-prediction
-evidence, streaming preparation, corrective train-only inputs, population
+These docs describe **0.17.0**, including processor-aware SFT trainers,
+multimodal GGUF companions, checkpoint snapshots, per-prediction evidence, streaming preparation, corrective train-only inputs, population
 safeguards, rollouts and tool-call chat training. Upgrade older installations
 to use these features. The repository changelog distinguishes shipped releases
 from future Unreleased work.
