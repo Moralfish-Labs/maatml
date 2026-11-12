@@ -397,6 +397,18 @@ first.
 `save_mode: adapter` keeps the checkpoint small enough to carry between
 machines; merge locally before exporting GGUF.
 
+`target_modules` is a list or one string. A list names modules by suffix
+(`q_proj`) or in full. A string is a regular expression matched against the
+whole module name. Use the string for a multimodal base: its vision and audio
+towers repeat the projection names, so a suffix list adapts them too, or fails
+on a wrapper PEFT cannot adapt.
+
+```yaml
+training:
+  lora:
+    target_modules: '.*language_model\.layers\.\d+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)'
+```
+
 ## Packaging and extensions
 
 For processor-aware plugin trainers, `training.frozen_module_prefixes` lists

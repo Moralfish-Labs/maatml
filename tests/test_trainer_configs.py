@@ -154,6 +154,24 @@ def test_lora_typo_is_rejected_not_silently_dropped() -> None:
     assert SFTTrainConfig(lora={"enabled": True, "alpha": 32}).lora.alpha == 32
 
 
+def test_lora_target_modules_take_a_list_or_one_regular_expression() -> None:
+    """A list names suffixes or full module names; a string is one expression
+    for the whole name, which is what a base with shared projection names in
+    its other towers needs."""
+    expression = (
+        r".*language_model\.layers\.\d+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)"
+    )
+    assert SFTTrainConfig(lora={"target_modules": expression}).lora.target_modules == expression
+    assert SFTTrainConfig().lora.target_modules == ["q_proj", "k_proj", "v_proj", "o_proj"]
+    assert SFTTrainConfig(lora={"target_modules": ["q_proj"]}).lora.target_modules == ["q_proj"]
+    with pytest.raises(ValidationError, match="not a regular expression"):
+        SFTTrainConfig(lora={"target_modules": "layers.(q_proj"})
+    with pytest.raises(ValidationError, match="empty expression"):
+        SFTTrainConfig(lora={"target_modules": " "})
+    with pytest.raises(ValidationError):
+        SFTTrainConfig(lora={"target_modules": 7})
+
+
 # --- shared schedule / precision helpers ------------------------------------
 
 

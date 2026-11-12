@@ -8,6 +8,13 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Added
+
+- `training.lora.target_modules` also takes one regular expression, matched
+  against the whole module name, so an adapter can be confined to the language
+  model of a base whose vision and audio towers repeat the projection names. A
+  list keeps its meaning.
+
 ## [0.17.0] - 2026-11-11
 
 ### Added

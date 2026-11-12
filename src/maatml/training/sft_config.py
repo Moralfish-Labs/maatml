@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -56,11 +57,28 @@ class LoraSettings(BaseModel):
     r: int = 16
     alpha: int = 32
     dropout: float = 0.05
-    target_modules: list[str] = Field(
+    # A list names modules by suffix or in full. A string is one regular
+    # expression matched against the whole module name, for a base whose other
+    # towers reuse the same projection names.
+    target_modules: Union[list[str], str] = Field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
     )
     # merged (default) | adapter | both, see train_sft artifact save path.
     save_mode: str = "merged"
+
+    @field_validator("target_modules")
+    @classmethod
+    def _check_target_modules(cls, v: Union[list[str], str]) -> Union[list[str], str]:
+        if isinstance(v, str):
+            try:
+                re.compile(v)
+            except re.error as exc:
+                raise ValueError(
+                    f"training.lora.target_modules is not a regular expression: {exc}"
+                ) from exc
+            if not v.strip():
+                raise ValueError("training.lora.target_modules must not be an empty expression")
+        return v
 
 
 class QuantizationSettings(BaseModel):
