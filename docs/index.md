@@ -69,7 +69,8 @@ validators, and metrics.
 
 ## Release boundary
 
-These docs describe **0.17.0**, including processor-aware SFT trainers,
+These docs describe **0.18.0**, including spec-checked adapter export,
+regular-expression LoRA targets, processor-aware SFT trainers,
 multimodal GGUF companions, checkpoint snapshots, per-prediction evidence, streaming preparation, corrective train-only inputs, population
 safeguards, rollouts and tool-call chat training. Upgrade older installations
 to use these features. The repository changelog distinguishes shipped releases

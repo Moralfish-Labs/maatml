@@ -31,7 +31,8 @@ does not belong in them.
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
 
-Current package version: **0.17.0**. Processor-aware SFT trainers,
+Current package version: **0.18.0**. Regular-expression LoRA targets,
+spec-checked adapter export, processor-aware SFT trainers,
 frozen-component checks, multimodal GGUF companions, checkpoint snapshots,
 per-prediction evidence, streaming preparation, corrective training inputs, population
 safeguards, rollouts and tool-call chat training are released. Historical tranches below describe completed work;

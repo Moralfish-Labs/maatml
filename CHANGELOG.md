@@ -8,6 +8,8 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-12
+
 ### Added
 
 - `training.lora.target_modules` also takes one regular expression, matched
