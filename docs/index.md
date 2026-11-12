@@ -56,7 +56,7 @@ Canonical references in the repo:
 | `maatml evaluate` | Validator + metrics + eval gates (`--gate` fails CI; `--cache`, `--blind`) |
 | `maatml gates derive` / `ship-check` / `operating-point derive` | Floors from reports, the release verdict, the val-derived threshold ([evidence](evidence.md)) |
 | `maatml runs` / `report` | The run registry (`--pack` / `--adopt` to move a run); the evidence document from the records alone |
-| `maatml export` | Bundle checkpoint (safetensors / gguf / mlx / onnx) + `manifest.json` |
+| `maatml export` | Bundle checkpoint (safetensors / gguf / mlx / adapter / onnx) + `manifest.json` |
 | `maatml compile` / `manifest amend` | Target compilation and checksummed additions to an export |
 | `maatml verify` | Recompute sha256 of manifest files |
 | `maatml serve` | JSON inference API, validator inline (`/predict?validate=1`) |

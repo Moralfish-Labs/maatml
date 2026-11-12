@@ -100,7 +100,7 @@ what "correct enough to ship" means; only the checks change.
 maatml prepare   <model-dir>   # build train/val/test splits
 maatml train     <model-dir>   # fine-tune (LoRA/QLoRA/full/DPO/ORPO/vision/VLM)
 maatml evaluate  <model-dir> --gate   # score and enforce gates
-maatml export    <model-dir>   # safetensors/gguf/mlx/onnx + manifest.json
+maatml export    <model-dir>   # safetensors/gguf/mlx/adapter/onnx + manifest.json
 maatml verify    <export-dir>  # sha256 check vs manifest
 maatml serve     <model-dir>   # JSON inference API (validator inline)
 maatml audit     [model-dir]   # environment + model-folder health check

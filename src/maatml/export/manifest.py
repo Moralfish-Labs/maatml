@@ -77,6 +77,25 @@ def read_safetensors_tensor_names(path: str | Path) -> list[str]:
     return [key for key in header if key != "__metadata__"]
 
 
+def read_safetensors_shapes(path: str | Path) -> dict[str, list[int]]:
+    """Return every tensor's shape in a ``.safetensors`` file, by name.
+
+    Header-only read; returns ``{}`` for anything it cannot parse.
+    """
+    header = _read_safetensors_header(path)
+    if header is None:
+        return {}
+    shapes: dict[str, list[int]] = {}
+    for key, spec in header.items():
+        if key == "__metadata__":
+            continue
+        shape = spec.get("shape") if isinstance(spec, dict) else None
+        if not isinstance(shape, list) or not all(isinstance(d, int) for d in shape):
+            return {}
+        shapes[key] = list(shape)
+    return shapes
+
+
 def _observed_weights_dtype(files: list[Path]) -> tuple[Optional[str], list[str]]:
     """Most-common tensor dtype across exported safetensors, and the full set.
 

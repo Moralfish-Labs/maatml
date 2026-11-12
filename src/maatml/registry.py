@@ -393,6 +393,7 @@ _BUILTIN_PLUGIN_MODULES = (
     "maatml.data.preference",
     "maatml.evaluation.predictors",
     "maatml.export.bundle",
+    "maatml.export.adapter",
     "maatml.export.gguf",
     "maatml.export.mlx_export",
     "maatml.servers",

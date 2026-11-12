@@ -14,6 +14,11 @@ for the Python package and per-model versions under `examples/`.
   against the whole module name, so an adapter can be confined to the language
   model of a base whose vision and audio towers repeat the projection names. A
   list keeps its meaning.
+- `maatml export --format adapter` writes `adapters/<name>/` holding exactly
+  `adapter_config.json` and `adapter_model.safetensors`, with `manifest.json`
+  beside the `adapters` folder. `extensions.adapter.spec` names a layout (rank
+  and tensor shapes by name), and the export fails without writing anything
+  unless the adapter matches it. Only safetensors headers are read.
 
 ### Changed
 

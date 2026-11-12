@@ -435,6 +435,9 @@ extensions:
     convert_script: null      # or a path; never searched on PATH
     quantize_binary: null
     mmproj: false            # opt in to a separate f16 multimodal companion
+  adapter:
+    name: my-adapter         # folder under adapters/; defaults to the model name
+    spec: adapter-spec.json  # optional layout the adapter must match
 ```
 
 maatml never searches `PATH` for the llama.cpp convert script or quantize
@@ -451,6 +454,19 @@ assets. Conversion does not establish inference support or answer quality.
 
 Prefer **Q5_K_M over Q4_K_M** for anything citation-shaped: quantization costs
 citation fidelity specifically, and an aggregate pass rate hides it.
+
+`maatml export --format adapter` needs a checkpoint trained with
+`save_mode: adapter` or `both`. It writes `adapters/<name>/` holding exactly
+`adapter_config.json` and `adapter_model.safetensors`, and `manifest.json`
+beside the `adapters` folder, so the adapter folder can be copied as it is
+into a runtime that loads LoRA modules by folder. The export always checks
+that every `lora_A` and `lora_B` tensor has the rank the config states. With
+`extensions.adapter.spec` it also requires the tensor names, shapes and rank of
+that file, `{"rank": 16, "tensors": {"<name>": [dims]}}`, and fails without
+writing anything when they differ. The spec is the layout a serving stack was
+shown to load. Tensors are compared by their safetensors header, so no weights
+are read. Use `--out` to keep the adapter apart from another format's bundle:
+each export writes its own `manifest.json`.
 
 ## Distillation
 

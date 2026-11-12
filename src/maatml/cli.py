@@ -8,7 +8,7 @@ Outputs land under ``<model-dir>/output/`` (gitignored).
   maatml train     <model-dir> [--smoke] [--resume auto|PATH] [--set K=V]
   maatml sweep     <model-dir> --param K=a,b [--metric NAME] [--smoke]
   maatml evaluate  <model-dir> [--checkpoint X] [--split test] [--gate] [--set K=V]
-  maatml export    <model-dir> [--checkpoint X] [--format gguf|mlx|safetensors|onnx]
+  maatml export    <model-dir> [--checkpoint X] [--format gguf|mlx|safetensors|adapter|onnx]
   maatml compile   <export-dir> --target NAME --out DIR [--option K=V]
   maatml verify    <export-dir-or-manifest>
   maatml manifest  amend <export-dir> <files...> [--format NAME]
@@ -552,7 +552,7 @@ def cmd_export(
     format: Optional[str] = typer.Option(
         None,
         "--format",
-        help="safetensors (default) | gguf | mlx | onnx (plugin-registered)",
+        help="safetensors (default) | gguf | mlx | adapter | onnx (plugin-registered)",
     ),
     out: Optional[Path] = typer.Option(
         None,
@@ -1882,6 +1882,7 @@ def cmd_plugins() -> None:
     # Import submodule directly so listing plugins does not require torch.
     from . import servers as _servers  # noqa: F401
     from .evaluation import predictors as _predictors  # noqa: F401
+    from .export import adapter as _adapter  # noqa: F401
     from .export import bundle as _bundle  # noqa: F401
     from .export import gguf as _gguf  # noqa: F401
     from .export import mlx_export as _mlx  # noqa: F401

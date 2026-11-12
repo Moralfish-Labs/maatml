@@ -167,7 +167,7 @@ the built-in `gguf` format remains restricted to its supported architectures.
 
 ## Exporters (`maatml export`)
 
-Built-ins: `safetensors`, `gguf` / `mlx` (optional tooling). The vision example
+Built-ins: `safetensors`, `adapter`, `gguf` / `mlx` (optional tooling). The vision example
 registers `onnx` / `vision_onnx` from its plugin. Custom:
 
 ```python
