@@ -15,6 +15,14 @@ for the Python package and per-model versions under `examples/`.
   model of a base whose vision and audio towers repeat the projection names. A
   list keeps its meaning.
 
+### Changed
+
+- Causal SFT refuses a row that renders to more tokens than
+  `training.max_input_tokens` (`RowTooLongError`) instead of cutting it from the
+  left, which removed the system turn and the tool declarations. The split is
+  tokenized before the first step, so the run aborts before training. Tokenized
+  caches written by earlier versions are not reused.
+
 ## [0.17.0] - 2026-11-11
 
 ### Added

@@ -19,7 +19,7 @@ TrainingArguments outer loop.
 
 Public surface:
 
-  - `LoraSettings`, `SFTTrainConfig`, `SFTTrainResult`
+  - `LoraSettings`, `SFTTrainConfig`, `SFTTrainResult`, `RowTooLongError`
   - `_resolve_device`, `_maybe_attach_lora`
   - `render_assistant_target(sample, target_field) -> str`
   - `render_inference_prompt(request, prompt_spec, tokenizer, *, user_placeholder) -> list[int]`
@@ -85,6 +85,10 @@ from .sft_config import (  # noqa: F401  re-export public config surface
 )
 
 console = Console()
+
+
+class RowTooLongError(ValueError):
+    """A row renders to more tokens than ``training.max_input_tokens``."""
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +274,12 @@ def build_chat_example(
     by decoding it back. A tool row whose spans cannot be located exactly
     raises :class:`ChatSpanError` rather than training on shifted labels.
 
+    A row longer than ``max_length`` raises :class:`RowTooLongError`. It is
+    never truncated: cutting from the left removes the system turn and the
+    tool declarations, a prompt the model is not served.
+
     ``return_spans`` adds ``spans``: ``(message_index, token_start, token_end)``
-    per assistant turn, before truncation (the dry-run checker reads them).
+    per assistant turn (the dry-run checker reads them).
     """
     rendered = _messages_from_sample(
         sample,
@@ -340,8 +348,10 @@ def build_chat_example(
         )
 
     if len(full_ids) > max_length:
-        full_ids = full_ids[-max_length:]
-        labels = labels[-max_length:]
+        raise RowTooLongError(
+            f"row {sample.get('sample_id')}: {len(full_ids)} tokens exceed "
+            f"max_input_tokens={max_length}; drop the row or raise the limit"
+        )
     out: dict[str, Any] = {"input_ids": full_ids, "labels": labels, "length": len(full_ids)}
     if return_spans:
         out["spans"] = spans
@@ -711,9 +721,10 @@ def train_sft(
             # val.jsonl content too: re-preparing with the same train split but
             # a different val split used to reuse a stale val cache.
             sha256_file(val_file) if val_file.is_file() else "",
-            # Bumped when masking changes, so caches built by the old
-            # prefix-length masking are never reused.
-            "causal_sft:chat_spans_v2",
+            # Bumped when masking or length handling changes, so a cache built
+            # by the old prefix-length masking or holding left-truncated rows
+            # is never reused.
+            "causal_sft:chat_spans_v3",
             target_field,
             request_field,
             user_placeholder,

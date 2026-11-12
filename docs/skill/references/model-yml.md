@@ -409,6 +409,11 @@ training:
     target_modules: '.*language_model\.layers\.\d+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)'
 ```
 
+A row that renders to more tokens than `max_input_tokens` stops the run with
+`RowTooLongError` before the first step. Rows are never truncated: cutting
+from the left removes the system turn and the tool declarations, which is a
+prompt the model is not served. Drop the row or raise the limit.
+
 ## Packaging and extensions
 
 For processor-aware plugin trainers, `training.frozen_module_prefixes` lists
