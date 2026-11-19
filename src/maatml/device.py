@@ -117,6 +117,19 @@ def is_main_process() -> bool:
     return True
 
 
+def local_rank() -> int:
+    """Local GPU/device index from ``LOCAL_RANK`` (0 when unset or invalid)."""
+    raw = os.environ.get("LOCAL_RANK")
+    if raw is not None:
+        try:
+            rank = int(raw)
+        except ValueError:
+            return 0
+        if rank >= 0:
+            return rank
+    return 0
+
+
 def resolve_device(device: str) -> Any:
     """Map ``auto|mps|cpu|cuda|<torch device str>`` to a ``torch.device``.
 

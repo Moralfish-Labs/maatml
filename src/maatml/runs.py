@@ -20,7 +20,7 @@ from .config import ModelDefinition
 from .device import is_main_process
 from .utils.io import write_json
 
-RunStatus = Literal["running", "completed", "aborted"]
+RunStatus = Literal["running", "completed", "aborted", "interrupted"]
 
 _RUNS_FILENAME = "runs.jsonl"
 
@@ -335,12 +335,12 @@ def finish_run(
     error: Optional[str] = None,
     gates: Optional[dict[str, Any]] = None,
 ) -> Optional[RunRecord]:
-    """Mark a run completed/aborted by appending an updated record.
+    """Mark a run completed/aborted/interrupted by appending an updated record.
 
     On non-main ranks (multi-GPU), returns ``None`` without writing.
     """
-    if status == "running":
-        raise ValueError("finish_run status must be 'completed' or 'aborted'")
+    if status not in ("completed", "aborted", "interrupted"):
+        raise ValueError("finish_run status must be 'completed', 'aborted', or 'interrupted'")
     if not is_main_process():
         return None
     rec = get_run(model_def, run_id)
@@ -504,7 +504,7 @@ def _has_hf_checkpoints(path: Path) -> bool:
 
 
 def latest_incomplete_run(model_def: ModelDefinition) -> Optional[RunRecord]:
-    """Latest resumable run: ``running`` with checkpoints, else any with them.
+    """Latest resumable run: ``running`` or ``interrupted`` with checkpoints, else any with them.
 
     A ``running`` record with no ``checkpoint-*`` has nothing to resume from
     (the run died before its first save, or the process was killed). Such a
@@ -513,9 +513,9 @@ def latest_incomplete_run(model_def: ModelDefinition) -> Optional[RunRecord]:
     """
     runs = list_runs(model_def)
     resumable = [r for r in runs if _has_hf_checkpoints(Path(r.out_dir))]
-    running = [r for r in resumable if r.status == "running"]
-    if running:
-        return running[-1]
+    active = [r for r in resumable if r.status in ("running", "interrupted")]
+    if active:
+        return active[-1]
     return resumable[-1] if resumable else None
 
 

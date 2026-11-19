@@ -24,6 +24,7 @@ Outputs land under ``<model-dir>/output/`` (gitignored).
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -41,6 +42,7 @@ from .overrides import (
     parse_override,
     pick_metric,
 )
+from .progress import resolve_progress_file
 from .registry import (
     FORMATS,
     TRAINERS,
@@ -51,6 +53,7 @@ from .registry import (
 )
 from .runs import list_runs, resolve_checkpoint
 from .scaffold import normalize_architecture, scaffold_model, validate_model_dir
+from .training.signals import TrainingInterrupted
 
 # MPS unsupported-op fallback to CPU; harmless on non-Mac.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -224,6 +227,11 @@ def cmd_train(
         "--resume",
         help="Resume training: 'auto' (latest incomplete run) or checkpoint path/run_id",
     ),
+    progress_file: Optional[Path] = typer.Option(
+        None,
+        "--progress-file",
+        help="Write atomic JobProgress JSON snapshots to this path",
+    ),
     set_overrides: Optional[list[str]] = typer.Option(
         None,
         "--set",
@@ -242,8 +250,33 @@ def cmd_train(
     trainer = TRAINERS.get(md.architecture) or TRAINERS.require(arch)
     from .training.selection import render_selection, select_checkpoint
 
+    resolved_progress = resolve_progress_file(progress_file)
+    extra_kwargs: dict[str, Any] = {}
+    if resolved_progress is not None:
+        try:
+            params = inspect.signature(trainer).parameters
+            accepts_progress = "progress_file" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            accepts_progress = False
+        if accepts_progress:
+            extra_kwargs["progress_file"] = resolved_progress
+
     if seeds is None:
-        result = trainer(md, smoke=smoke, limit=limit, device=device, seed=seed, resume=resume)
+        try:
+            result = trainer(
+                md,
+                smoke=smoke,
+                limit=limit,
+                device=device,
+                seed=seed,
+                resume=resume,
+                **extra_kwargs,
+            )
+        except TrainingInterrupted as exc:
+            console.print(f"[yellow]interrupted[/] {exc}")
+            raise typer.Exit(code=128 + exc.signum) from exc
         console.print(f"[green]done[/] out_dir={result.out_dir} metrics={result.metrics}")
         selection = select_checkpoint(md, Path(result.out_dir).name, device=device, smoke=smoke)
         if selection:
@@ -1346,6 +1379,13 @@ def cmd_snapshot(
     writer_lock: Path = typer.Option(...),
     min_step: int = typer.Option(..., min=1),
     out: Path = typer.Option(...),
+    compress_level: int = typer.Option(
+        1,
+        "--compress-level",
+        min=0,
+        max=9,
+        help="Gzip compression level for the snapshot archive (0-9, default 1)",
+    ),
 ) -> None:
     """Wait for and snapshot a complete policy checkpoint for external backup.
 
@@ -1362,6 +1402,7 @@ def cmd_snapshot(
             writer_lock=writer_lock,
             min_step=min_step,
             out=out,
+            compresslevel=compress_level,
         )
     except (BundleError, OSError, ValueError) as exc:
         console.print(f"[red]snapshot refused[/] {exc}")
@@ -1570,6 +1611,8 @@ def _lifecycle_options(
     seed: Optional[int],
     limit: Optional[int],
     export_format: Optional[str],
+    resume: Optional[str] = None,
+    progress_file: Optional[Path] = None,
 ):
     from .lifecycle import RunOptions
 
@@ -1582,6 +1625,8 @@ def _lifecycle_options(
         seed=seed,
         limit=limit,
         export_format=export_format,
+        resume=resume,
+        progress_file=progress_file,
     )
 
 
@@ -1604,6 +1649,16 @@ def cmd_run(
     limit: Optional[int] = typer.Option(None, "--limit"),
     export_format: Optional[str] = typer.Option(
         None, "--format", help="Export format (default safetensors)"
+    ),
+    resume: Optional[str] = typer.Option(
+        None,
+        "--resume",
+        help="Resume training: 'auto' (latest incomplete run) or checkpoint path/run_id",
+    ),
+    progress_file: Optional[Path] = typer.Option(
+        None,
+        "--progress-file",
+        help="Write atomic JobProgress JSON snapshots to this path",
     ),
     set_overrides: Optional[list[str]] = typer.Option(
         None, "--set", help="Override model.yml (repeatable); feeds the fingerprint"
@@ -1636,7 +1691,16 @@ def cmd_run(
     )
 
     options = _lifecycle_options(
-        smoke, device, force, from_step, until_step, seed, limit, export_format
+        smoke,
+        device,
+        force,
+        from_step,
+        until_step,
+        seed,
+        limit,
+        export_format,
+        resume=resume,
+        progress_file=resolve_progress_file(progress_file),
     )
     # A bad step name is a usage error; a config the run cannot use is a
     # refusal. Both are reported before any step runs, and before a dry run
@@ -1666,6 +1730,7 @@ def cmd_run(
         eval_report=report,
         limit=limit,
         seed=seed,
+        resume=resume,
     )
 
     if dry_run:
@@ -1673,7 +1738,13 @@ def cmd_run(
         return
 
     def _on_step(name: str, status: str, detail: str) -> None:
-        colour = {"running": "cyan", "ran": "green", "skipped": "dim", "failed": "red"}
+        colour = {
+            "running": "cyan",
+            "ran": "green",
+            "skipped": "dim",
+            "interrupted": "yellow",
+            "failed": "red",
+        }
         console.print(f"[{colour.get(status, 'white')}]{status:>8}[/] {name}  {detail}")
 
     result = run_pipeline(md, options, on_step=_on_step)

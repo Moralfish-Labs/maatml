@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # used to fall through resolve_load_dtype as "fp32", so `precision: bfloat16`
 # or a typo trained at a precision nobody asked for.
 VALID_PRECISIONS = ("bf16", "fp16", "fp32")
+VALID_SAVE_STRATEGIES = ("no", "steps", "epoch")
 # Read by the lifecycle after training, not by any trainer.
 LIFECYCLE_TRAINING_KEYS = frozenset({"select_by"})
 
@@ -114,10 +115,16 @@ class SFTTrainConfig(BaseModel):
     grad_checkpointing: bool = False
     eval_steps: int = 9999
     save_steps: int = 200
+    save_strategy: str = "steps"
+    save_only_model: bool = False
     checkpoint_snapshots: bool = False
     logging_steps: int = 20
     disable_tqdm: bool = False
     max_steps: int = -1
+    optim: str = "adamw_torch"
+    lr_scheduler_type: str = "linear"
+    lr_scheduler_kwargs: Optional[dict[str, Any]] = None
+    max_grad_norm: float = Field(default=1.0, ge=0.0)
     lora: LoraSettings = Field(default_factory=LoraSettings)
     report_to: Any = None
     group_by_length: bool = False
@@ -133,6 +140,25 @@ class SFTTrainConfig(BaseModel):
     @classmethod
     def _check_precision(cls, v: str) -> str:
         return validate_precision(v)
+
+    @field_validator("save_strategy")
+    @classmethod
+    def _check_save_strategy(cls, v: Any) -> str:
+        text = str(v)
+        if text not in VALID_SAVE_STRATEGIES:
+            raise ValueError(
+                f"training.save_strategy must be one of {', '.join(VALID_SAVE_STRATEGIES)}; "
+                f"got {v!r}"
+            )
+        return text
+
+    @field_validator("optim", "lr_scheduler_type")
+    @classmethod
+    def _check_nonempty_str(cls, v: Any) -> str:
+        text = str(v).strip()
+        if not text:
+            raise ValueError("optimizer/scheduler option must be a non-empty string")
+        return text
 
 
 @dataclass

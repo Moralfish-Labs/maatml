@@ -21,6 +21,7 @@ re-runs, and the plan says which component changed.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 
 from .config import ModelDefinition, get_dataset_cfg
+from .progress import JobProgressReporter, resolve_progress_file
+from .training.signals import TrainingInterrupted
 from .utils.io import read_json, sha256_file, stable_hash, write_json_atomic
 
 STEPS: tuple[str, ...] = ("prepare", "train", "evaluate", "export", "verify")
@@ -408,6 +411,7 @@ def plan_pipeline(
     eval_report: Optional[Path] = None,
     limit: Optional[int] = None,
     seed: Optional[int] = None,
+    resume: Optional[str] = None,
 ) -> list[StepPlan]:
     """Per-step fresh/stale decision, with the reason a step is stale."""
     selected = _selected_steps(from_step, until_step)
@@ -440,6 +444,8 @@ def plan_pipeline(
             fresh, reason = False, "outputs missing"
         if fresh and force:
             fresh, reason = False, "--force"
+        if fresh and step == "train" and resume:
+            fresh, reason = False, f"--resume {resume}"
         # A step whose upstream re-ran cannot be fresh: its inputs are about to
         # change, and the stored fingerprint describes the old ones.
         if fresh and upstream_ran:
@@ -551,6 +557,8 @@ class RunOptions:
     seed: Optional[int] = None
     limit: Optional[int] = None
     export_format: Optional[str] = None
+    resume: Optional[str] = None
+    progress_file: Optional[Path] = None
 
 
 def _resolve_paths(
@@ -579,19 +587,37 @@ def _step_prepare(model_def: ModelDefinition, options: RunOptions) -> str:
     return f"format={fmt} splits={counts}"
 
 
+def _trainer_accepts(fn: Callable[..., Any], param: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if param in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def _step_train(model_def: ModelDefinition, options: RunOptions) -> str:
     from .registry import TRAINERS
     from .scaffold import normalize_architecture
 
     arch = normalize_architecture(model_def.architecture)
     trainer = TRAINERS.get(model_def.architecture) or TRAINERS.require(arch)
-    result = trainer(
-        model_def,
-        smoke=options.smoke,
-        limit=options.limit,
-        device=options.device,
-        seed=options.seed,
-    )
+    kwargs: dict[str, Any] = {
+        "smoke": options.smoke,
+        "limit": options.limit,
+        "device": options.device,
+        "seed": options.seed,
+    }
+    if options.resume is not None:
+        if not _trainer_accepts(trainer, "resume"):
+            raise StepError(
+                f"Trainer for architecture={model_def.architecture!r} does not accept resume="
+            )
+        kwargs["resume"] = options.resume
+    if options.progress_file is not None and _trainer_accepts(trainer, "progress_file"):
+        kwargs["progress_file"] = options.progress_file
+    result = trainer(model_def, **kwargs)
     from .training.selection import select_checkpoint
 
     selection = select_checkpoint(
@@ -669,6 +695,10 @@ def run_pipeline(
         smoke=options.smoke,
         steps=_selected_steps(options.from_step, options.until_step),
     )
+    reporter = JobProgressReporter(
+        resolve_progress_file(options.progress_file),
+        artifact_uri=str(model_def.output_dir),
+    )
     result = PipelineResult()
     for step in STEPS:
         checkpoint, export_dir, report = _resolve_paths(model_def)
@@ -689,6 +719,7 @@ def run_pipeline(
                 eval_report=report,
                 limit=options.limit,
                 seed=options.seed,
+                resume=options.resume,
             )
         }
         plan = plans[step]
@@ -703,21 +734,24 @@ def run_pipeline(
 
         if on_step:
             on_step(step, "running", plan.reason)
+        reporter.update(stage=step)
         try:
             detail = _EXECUTORS[step](model_def, options)
         except Exception as exc:  # noqa: BLE001  recorded, then re-raised as a result
+            step_status = "interrupted" if isinstance(exc, TrainingInterrupted) else "failed"
+            reporter.update(stage=step_status)
             record_step(
                 model_def,
                 step,
                 components=plan.components,
-                status="failed",
+                status=step_status,
                 detail=f"{type(exc).__name__}: {exc}",
                 smoke=options.smoke,
             )
-            result.outcomes.append(StepOutcome(step, "failed", f"{type(exc).__name__}: {exc}"))
+            result.outcomes.append(StepOutcome(step, step_status, f"{type(exc).__name__}: {exc}"))
             result.failed = step
             if on_step:
-                on_step(step, "failed", f"{type(exc).__name__}: {exc}")
+                on_step(step, step_status, f"{type(exc).__name__}: {exc}")
             return result
 
         # Recompute components after the step: its own outputs (checkpoint,
@@ -744,6 +778,7 @@ def run_pipeline(
         result.outcomes.append(StepOutcome(step, "ran", detail))
         if on_step:
             on_step(step, "ran", detail)
+    reporter.update(stage="completed")
     return result
 
 

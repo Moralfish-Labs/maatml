@@ -215,3 +215,13 @@ def test_an_adopted_run_joins_the_registry_once(tmp_path: Path) -> None:
 def test_an_unknown_run_id_stays_unknown(tmp_path: Path) -> None:
     md = _md(tmp_path)
     assert get_run(md, "20260813-000000-nosuch") is None
+
+
+def test_finish_run_rejects_running_and_accepts_interrupted(tmp_path: Path) -> None:
+    md = _md(tmp_path)
+    rec = start_run(md)
+    with pytest.raises(ValueError, match="interrupted"):
+        finish_run(md, rec.run_id, "running")
+    interrupted = finish_run(md, rec.run_id, "interrupted", error="SIGTERM")
+    assert interrupted is not None
+    assert interrupted.status == "interrupted"

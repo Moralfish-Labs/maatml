@@ -55,6 +55,7 @@ from ..device import (
     effective_dataloader_workers,
     resolve_training_placement,
 )
+from ..progress import JobProgressReporter, make_progress_callback, resolve_progress_file
 from ..runs import begin_training_run, finish_run, normalize_report_to
 from ..utils.chat import (
     ChatSpanError,
@@ -83,6 +84,7 @@ from .sft_config import (  # noqa: F401  re-export public config surface
     SFTTrainResult,
     render_assistant_target,
 )
+from .signals import TrainingInterrupted, TrainingStopController, make_signal_stop_callback
 
 console = Console()
 
@@ -487,6 +489,36 @@ def _load_or_build_tokenized_cache(
     return tokenized
 
 
+def _is_quantized_model(model: Any) -> bool:
+    for candidate in (
+        model,
+        getattr(model, "base_model", None),
+        getattr(getattr(model, "base_model", None), "model", None),
+    ):
+        if candidate is None:
+            continue
+        if getattr(candidate, "is_loaded_in_4bit", False) or getattr(
+            candidate, "is_loaded_in_8bit", False
+        ):
+            return True
+    cfg = getattr(model, "config", None)
+    return getattr(cfg, "quantization_config", None) is not None
+
+
+def _refuse_quantized_merge(
+    save_mode: Optional[str],
+    *,
+    lora_enabled: bool,
+    quantized: bool,
+) -> None:
+    mode = (save_mode or "merged").lower()
+    if lora_enabled and quantized and mode in ("merged", "both"):
+        raise ValueError(
+            "Cannot merge LoRA weights into a quantized (4-bit/8-bit) base model; "
+            "set training.lora.save_mode to 'adapter'"
+        )
+
+
 def _save_sft_artifacts(
     model,
     tokenizer,
@@ -495,6 +527,7 @@ def _save_sft_artifacts(
     save_mode: str,
     base_model_id: str,
     spec_path: Optional[Path] = None,
+    quantized: bool = False,
 ) -> dict[str, Any]:
     """Persist merged and/or adapter weights per ``lora.save_mode``.
 
@@ -506,6 +539,11 @@ def _save_sft_artifacts(
         raise ValueError(f"training.lora.save_mode must be merged|adapter|both; got {save_mode!r}")
     meta: dict[str, Any] = {"lora_save_mode": mode, "base_model_id": base_model_id}
     is_peft = hasattr(model, "merge_and_unload") and hasattr(model, "save_pretrained")
+    _refuse_quantized_merge(
+        mode,
+        lora_enabled=is_peft,
+        quantized=quantized or _is_quantized_model(model),
+    )
 
     if mode in ("adapter", "both") and is_peft:
         adapter_dir = out_dir / "adapter" if mode == "both" else out_dir
@@ -584,6 +622,7 @@ def train_sft(
     trial: Optional[dict[str, Any]] = None,
     log_label: str = "SFT",
     data_collator_factory: Optional[Callable[..., Any]] = None,
+    progress_file: Optional[str | Path] = None,
 ) -> SFTTrainResult:
     """The shared SFT training driver. Each task module is a thin wrapper
     that pins `target_field`, `request_field`, and `default_prompt_spec`.
@@ -626,9 +665,19 @@ def train_sft(
     prompt_spec = read_json(spec_path)
 
     dataset_dir = Path(dataset_dir) if dataset_dir else model_def.prepared_dir
+    quant = cfg.quantization if cfg.quantization and cfg.quantization.enabled() else None
+    _refuse_quantized_merge(
+        cfg.lora.save_mode,
+        lora_enabled=cfg.lora.enabled,
+        quantized=quant is not None,
+    )
     target_device, profile, distributed = resolve_training_placement(device)
     if cfg.checkpoint_snapshots and distributed:
         raise ValueError("SFT checkpoint snapshots currently require a single process")
+    if cfg.checkpoint_snapshots and (cfg.save_strategy == "no" or cfg.save_only_model):
+        raise ValueError(
+            "SFT checkpoint snapshots require save_strategy != 'no' and save_only_model=False"
+        )
 
     run, out_dir, resume_path = begin_training_run(
         model_def,
@@ -639,252 +688,287 @@ def train_sft(
         resume=resume,
         trial=trial,
     )
+    reporter = JobProgressReporter(
+        resolve_progress_file(progress_file),
+        run_id=run.run_id,
+        artifact_uri=str(out_dir),
+    )
+    stop_controller = TrainingStopController()
 
     # The run record exists from here on: reading the splits is fallible too,
-    # so it belongs inside the handler that marks the run `aborted`.
+    # so it belongs inside the handler that marks the run `aborted` or `interrupted`.
     try:
-        train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
-        val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
-        if limit is not None:
-            train_rows = train_rows[:limit]
-            val_rows = val_rows[: max(2, limit // 4)]
-        if not train_rows:
-            raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
+        with stop_controller.installed():
+            reporter.update(stage="train")
+            train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
+            val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
+            if limit is not None:
+                train_rows = train_rows[:limit]
+                val_rows = val_rows[: max(2, limit // 4)]
+            if not train_rows:
+                raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
 
-        console.print(
-            f"[cyan]{log_label} train[/]: run={run.run_id} model={cfg.model_id} "
-            f"train={len(train_rows)} val={len(val_rows)} lora={cfg.lora.enabled} "
-            f"precision={cfg.precision}"
-            + (f" quant={cfg.quantization.enabled()}" if cfg.quantization else "")
-        )
-
-        processor = None
-        if data_collator_factory is not None:
-            from transformers import AutoProcessor
-
-            processor = AutoProcessor.from_pretrained(cfg.model_id, revision=cfg.model_revision)
-            tokenizer = processor.tokenizer
-            collator = data_collator_factory(model_def, processor, cfg)
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        use_bf16, use_fp16 = precision_flags(
-            cfg.precision, device=target_device, distributed=distributed
-        )
-        quant = cfg.quantization if cfg.quantization and cfg.quantization.enabled() else None
-        load_kwargs = from_pretrained_kwargs(
-            profile,
-            precision=cfg.precision,
-            attn_implementation=cfg.attn_implementation,
-            quantization=quant,
-            revision=cfg.model_revision,
-            # A LoRA never updates the base, so it does not need fp32 master
-            # weights. On MPS carrying them anyway is the difference between
-            # fitting in unified memory and swapping.
-            frozen_base=bool(cfg.lora and cfg.lora.enabled),
-        )
-        model_class: Any = AutoModelForCausalLM
-        if processor is not None:
-            from transformers import AutoModelForImageTextToText
-
-            model_class = AutoModelForImageTextToText
-        model = model_class.from_pretrained(cfg.model_id, **load_kwargs)
-        model = maybe_prepare_kbit(model, quant)
-        ensure_tokenizer_model_contract(
-            model,
-            tokenizer,
-            embedding_strategy=embedding_strategy,
-        )
-        model.config.pad_token_id = tokenizer.pad_token_id
-        model.config.bos_token_id = tokenizer.bos_token_id
-        model.config.eos_token_id = tokenizer.eos_token_id
-        if hasattr(model, "generation_config") and model.generation_config is not None:
-            model.generation_config.pad_token_id = tokenizer.pad_token_id
-            model.generation_config.bos_token_id = tokenizer.bos_token_id
-            model.generation_config.eos_token_id = tokenizer.eos_token_id
-        from .frozen import FrozenComponents, make_frozen_guard_callback
-
-        frozen = FrozenComponents(model, cfg.frozen_module_prefixes)
-        model = _maybe_attach_lora(model, cfg.lora)
-        frozen.verify()
-
-        train_file = dataset_dir / "train.jsonl"
-        val_file = dataset_dir / "val.jsonl"
-        prompt_hash = sha256_file(spec_path) if spec_path.is_file() else stable_hash(prompt_spec)
-        cache_key = stable_hash(
-            _tokenizer_cache_identity(tokenizer),
-            cfg.max_input_tokens,
-            prompt_hash,
-            sha256_file(train_file) if train_file.is_file() else "",
-            # val.jsonl content too: re-preparing with the same train split but
-            # a different val split used to reuse a stale val cache.
-            sha256_file(val_file) if val_file.is_file() else "",
-            # Bumped when masking or length handling changes, so a cache built
-            # by the old prefix-length masking or holding left-truncated rows
-            # is never reused.
-            "causal_sft:chat_spans_v3",
-            target_field,
-            request_field,
-            user_placeholder,
-            limit,
-        )
-        cache_dir = model_def.output_dir / "cache"
-        train_cache = cache_dir / f"sft_train_{cache_key[:16]}.pt"
-        val_cache = cache_dir / f"sft_val_{cache_key[:16]}.pt"
-
-        def _tok(row: dict) -> dict:
-            return build_chat_example(
-                row,
-                prompt_spec,
-                tokenizer,
-                max_length=cfg.max_input_tokens,
-                target_field=target_field,
-                request_field=request_field,
-                user_placeholder=user_placeholder,
+            console.print(
+                f"[cyan]{log_label} train[/]: run={run.run_id} model={cfg.model_id} "
+                f"train={len(train_rows)} val={len(val_rows)} lora={cfg.lora.enabled} "
+                f"precision={cfg.precision}"
+                + (f" quant={cfg.quantization.enabled()}" if cfg.quantization else "")
             )
 
-        if processor is None:
-            train_tok = _load_or_build_tokenized_cache(train_rows, train_cache, _tok)
-            val_tok = _load_or_build_tokenized_cache(val_rows, val_cache, _tok) if val_rows else []
-            collator = SFTDataCollator(
-                tokenizer,
-                prompt_spec,
-                max_length=cfg.max_input_tokens,
-                target_field=target_field,
-                request_field=request_field,
-                user_placeholder=user_placeholder,
-                pretokenized=True,
+            processor = None
+            if data_collator_factory is not None:
+                from transformers import AutoProcessor
+
+                processor = AutoProcessor.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+                tokenizer = processor.tokenizer
+                collator = data_collator_factory(model_def, processor, cfg)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            use_bf16, use_fp16 = precision_flags(
+                cfg.precision, device=target_device, distributed=distributed
             )
-        else:
-            train_tok, val_tok = train_rows, val_rows
-        train_ds = _ListDataset(train_tok)
-        val_ds = _ListDataset(val_tok) if val_tok else None
+            load_kwargs = from_pretrained_kwargs(
+                profile,
+                precision=cfg.precision,
+                attn_implementation=cfg.attn_implementation,
+                quantization=quant,
+                revision=cfg.model_revision,
+                # A LoRA never updates the base, so it does not need fp32 master
+                # weights. On MPS carrying them anyway is the difference between
+                # fitting in unified memory and swapping.
+                frozen_base=bool(cfg.lora and cfg.lora.enabled),
+                distributed=distributed,
+            )
+            model_class: Any = AutoModelForCausalLM
+            if processor is not None:
+                from transformers import AutoModelForImageTextToText
 
-        total_steps = total_training_steps(
-            len(train_rows),
-            batch_size=cfg.batch_size,
-            grad_accum=cfg.grad_accum,
-            epochs=cfg.epochs,
-            max_steps=cfg.max_steps,
-        )
-        use_grad_ckpt = bool(cfg.grad_checkpointing) and profile.allow_grad_checkpointing
-        run_eval_during_training = (
-            val_ds is not None and profile.allow_mid_train_eval and cfg.eval_steps < total_steps
-        )
-        warmup_steps = resolve_warmup_steps(total_steps, cfg.warmup_ratio)
-        report_to = normalize_report_to(cfg.report_to)
-        num_workers = effective_dataloader_workers(profile, cfg.dataloader_workers)
+                model_class = AutoModelForImageTextToText
+            model = model_class.from_pretrained(cfg.model_id, **load_kwargs)
+            model = maybe_prepare_kbit(model, quant)
+            ensure_tokenizer_model_contract(
+                model,
+                tokenizer,
+                embedding_strategy=embedding_strategy,
+            )
+            model.config.pad_token_id = tokenizer.pad_token_id
+            model.config.bos_token_id = tokenizer.bos_token_id
+            model.config.eos_token_id = tokenizer.eos_token_id
+            if hasattr(model, "generation_config") and model.generation_config is not None:
+                model.generation_config.pad_token_id = tokenizer.pad_token_id
+                model.generation_config.bos_token_id = tokenizer.bos_token_id
+                model.generation_config.eos_token_id = tokenizer.eos_token_id
+            from .frozen import FrozenComponents, make_frozen_guard_callback
 
-        args_kwargs: dict = {
-            "output_dir": str(out_dir),
-            "run_name": run.run_id,
-            "per_device_train_batch_size": cfg.batch_size,
-            "per_device_eval_batch_size": cfg.batch_size,
-            "gradient_accumulation_steps": cfg.grad_accum,
-            "learning_rate": cfg.learning_rate,
-            "num_train_epochs": cfg.epochs,
-            "weight_decay": cfg.weight_decay,
-            "warmup_steps": warmup_steps,
-            "logging_steps": cfg.logging_steps,
-            "disable_tqdm": cfg.disable_tqdm,
-            "eval_strategy": "steps" if run_eval_during_training else "no",
-            "eval_steps": cfg.eval_steps if run_eval_during_training else None,
-            "save_strategy": "steps",
-            "save_steps": cfg.save_steps,
-            "save_total_limit": cfg.keep_checkpoints,
-            "seed": cfg.seed,
-            "bf16": use_bf16,
-            "fp16": use_fp16,
-            "gradient_checkpointing": use_grad_ckpt,
-            "dataloader_num_workers": num_workers,
-            "report_to": report_to,
-            "optim": "adamw_torch",
-            "max_steps": cfg.max_steps,
-            # Distributed: let HF Trainer / accelerate place the model.
-            "use_cpu": (not distributed) and target_device.type == "cpu",
-            "remove_unused_columns": False,
-            "length_column_name": "length",
-        }
-        # transformers≥5 dropped group_by_length from TrainingArguments.
-        import inspect
+            frozen = FrozenComponents(model, cfg.frozen_module_prefixes)
+            model = _maybe_attach_lora(model, cfg.lora)
+            frozen.verify()
 
-        if "group_by_length" in inspect.signature(TrainingArguments.__init__).parameters:
-            args_kwargs["group_by_length"] = bool(cfg.group_by_length)
-        args = TrainingArguments(**args_kwargs)
+            train_file = dataset_dir / "train.jsonl"
+            val_file = dataset_dir / "val.jsonl"
+            prompt_hash = (
+                sha256_file(spec_path) if spec_path.is_file() else stable_hash(prompt_spec)
+            )
+            cache_key = stable_hash(
+                _tokenizer_cache_identity(tokenizer),
+                cfg.max_input_tokens,
+                prompt_hash,
+                sha256_file(train_file) if train_file.is_file() else "",
+                # val.jsonl content too: re-preparing with the same train split but
+                # a different val split used to reuse a stale val cache.
+                sha256_file(val_file) if val_file.is_file() else "",
+                # Bumped when masking or length handling changes, so a cache built
+                # by the old prefix-length masking or holding left-truncated rows
+                # is never reused.
+                "causal_sft:chat_spans_v3",
+                target_field,
+                request_field,
+                user_placeholder,
+                limit,
+            )
+            cache_dir = model_def.output_dir / "cache"
+            train_cache = cache_dir / f"sft_train_{cache_key[:16]}.pt"
+            val_cache = cache_dir / f"sft_val_{cache_key[:16]}.pt"
 
-        callbacks = [make_nan_guard_callback(), make_cache_release_callback(profile)]
-        if cfg.frozen_module_prefixes:
-            callbacks.append(make_frozen_guard_callback(frozen))
-        if cfg.checkpoint_snapshots:
-            from .checkpoint_snapshot import make_snapshot_ready_callback
+            def _tok(row: dict) -> dict:
+                return build_chat_example(
+                    row,
+                    prompt_spec,
+                    tokenizer,
+                    max_length=cfg.max_input_tokens,
+                    target_field=target_field,
+                    request_field=request_field,
+                    user_placeholder=user_placeholder,
+                )
 
-            if run.spec_hash is None:
-                raise ValueError("SFT snapshot requires a native recipe fingerprint")
-            callbacks.append(make_snapshot_ready_callback(run.spec_hash))
+            if processor is None:
+                train_tok = _load_or_build_tokenized_cache(train_rows, train_cache, _tok)
+                val_tok = (
+                    _load_or_build_tokenized_cache(val_rows, val_cache, _tok) if val_rows else []
+                )
+                collator = SFTDataCollator(
+                    tokenizer,
+                    prompt_spec,
+                    max_length=cfg.max_input_tokens,
+                    target_field=target_field,
+                    request_field=request_field,
+                    user_placeholder=user_placeholder,
+                    pretokenized=True,
+                )
+            else:
+                train_tok, val_tok = train_rows, val_rows
+            train_ds = _ListDataset(train_tok)
+            val_ds = _ListDataset(val_tok) if val_tok else None
 
-        trainer = Trainer(
-            model=model,
-            args=args,
-            train_dataset=train_ds,
-            eval_dataset=val_ds if run_eval_during_training else None,
-            data_collator=collator,
-            processing_class=processor if processor is not None else tokenizer,
-            callbacks=callbacks,
-        )
+            total_steps = total_training_steps(
+                len(train_rows),
+                batch_size=cfg.batch_size,
+                grad_accum=cfg.grad_accum,
+                epochs=cfg.epochs,
+                max_steps=cfg.max_steps,
+            )
+            use_grad_ckpt = bool(cfg.grad_checkpointing) and profile.allow_grad_checkpointing
+            run_eval_during_training = (
+                val_ds is not None and profile.allow_mid_train_eval and cfg.eval_steps < total_steps
+            )
+            warmup_steps = resolve_warmup_steps(total_steps, cfg.warmup_ratio)
+            report_to = normalize_report_to(cfg.report_to)
+            num_workers = effective_dataloader_workers(profile, cfg.dataloader_workers)
 
-        train_output = trainer.train(
-            resume_from_checkpoint=str(resume_path) if resume_path else None
-        )
+            args_kwargs: dict = {
+                "output_dir": str(out_dir),
+                "run_name": run.run_id,
+                "per_device_train_batch_size": cfg.batch_size,
+                "per_device_eval_batch_size": cfg.batch_size,
+                "gradient_accumulation_steps": cfg.grad_accum,
+                "learning_rate": cfg.learning_rate,
+                "num_train_epochs": cfg.epochs,
+                "weight_decay": cfg.weight_decay,
+                "warmup_steps": warmup_steps,
+                "logging_steps": cfg.logging_steps,
+                "disable_tqdm": cfg.disable_tqdm,
+                "eval_strategy": "steps" if run_eval_during_training else "no",
+                "eval_steps": cfg.eval_steps if run_eval_during_training else None,
+                "save_strategy": cfg.save_strategy,
+                "save_steps": cfg.save_steps,
+                "save_total_limit": cfg.keep_checkpoints,
+                "save_only_model": cfg.save_only_model,
+                "seed": cfg.seed,
+                "bf16": use_bf16,
+                "fp16": use_fp16,
+                "gradient_checkpointing": use_grad_ckpt,
+                "dataloader_num_workers": num_workers,
+                "report_to": report_to,
+                "optim": cfg.optim,
+                "lr_scheduler_type": cfg.lr_scheduler_type,
+                "max_grad_norm": cfg.max_grad_norm,
+                "max_steps": cfg.max_steps,
+                # Distributed: let HF Trainer / accelerate place the model.
+                "use_cpu": (not distributed) and target_device.type == "cpu",
+                "remove_unused_columns": False,
+                "length_column_name": "length",
+            }
+            if cfg.lr_scheduler_kwargs is not None:
+                args_kwargs["lr_scheduler_kwargs"] = cfg.lr_scheduler_kwargs
+            # transformers≥5 dropped group_by_length from TrainingArguments.
+            import inspect
 
-        eval_metrics: dict[str, Any] = {}
-        if val_ds is not None:
-            profile.empty_cache()
-            eval_metrics = trainer.evaluate(eval_dataset=val_ds) or {}
+            if "group_by_length" in inspect.signature(TrainingArguments.__init__).parameters:
+                args_kwargs["group_by_length"] = bool(cfg.group_by_length)
+            args = TrainingArguments(**args_kwargs)
 
-        frozen.verify()
-        save_meta = _save_sft_artifacts(
-            model,
-            processor if processor is not None else tokenizer,
-            out_dir,
-            save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
-            base_model_id=cfg.model_id,
-            spec_path=spec_path,
-        )
-        frozen.verify()
+            callbacks = [
+                make_nan_guard_callback(),
+                make_cache_release_callback(profile),
+                make_signal_stop_callback(stop_controller),
+            ]
+            if reporter.enabled:
+                callbacks.append(make_progress_callback(reporter))
+            if cfg.frozen_module_prefixes:
+                callbacks.append(make_frozen_guard_callback(frozen))
+            if cfg.checkpoint_snapshots:
+                from .checkpoint_snapshot import make_snapshot_ready_callback
 
-        metrics_out = {k: float(v) for k, v in eval_metrics.items() if isinstance(v, (int, float))}
-        write_run_metadata(
-            out_dir,
-            model_def,
-            {
-                "train": dataset_dir / "train.jsonl",
-                "val": dataset_dir / "val.jsonl",
-            },
-            extra={
-                "run_id": run.run_id,
-                "smoke": smoke,
-                "device": str(target_device),
-                "profile": profile.name,
-                "distributed": distributed,
-                "model_revision": cfg.model_revision,
-                "processor_class": type(processor).__name__ if processor is not None else None,
-                "frozen_component_sha256": frozen.hashes,
-                **save_meta,
-            },
-        )
-        finish_run(model_def, run.run_id, "completed", metrics=metrics_out)
+                if run.spec_hash is None:
+                    raise ValueError("SFT snapshot requires a native recipe fingerprint")
+                callbacks.append(make_snapshot_ready_callback(run.spec_hash))
 
-        return SFTTrainResult(
-            out_dir=out_dir,
-            metrics=metrics_out,
-            train_runtime=float(
-                getattr(train_output, "metrics", {}).get("train_runtime", 0.0)
-                if hasattr(train_output, "metrics")
-                else 0.0
-            ),
-        )
+            trainer = Trainer(
+                model=model,
+                args=args,
+                train_dataset=train_ds,
+                eval_dataset=val_ds if run_eval_during_training else None,
+                data_collator=collator,
+                processing_class=processor if processor is not None else tokenizer,
+                callbacks=callbacks,
+            )
+
+            with stop_controller.training_loop():
+                train_output = trainer.train(
+                    resume_from_checkpoint=str(resume_path) if resume_path else None
+                )
+            stop_controller.raise_if_interrupted()
+
+            eval_metrics: dict[str, Any] = {}
+            if val_ds is not None:
+                profile.empty_cache()
+                eval_metrics = trainer.evaluate(eval_dataset=val_ds) or {}
+
+            frozen.verify()
+            save_meta = _save_sft_artifacts(
+                model,
+                processor if processor is not None else tokenizer,
+                out_dir,
+                save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
+                base_model_id=cfg.model_id,
+                spec_path=spec_path,
+                quantized=quant is not None,
+            )
+            frozen.verify()
+
+            metrics_out = {
+                k: float(v) for k, v in eval_metrics.items() if isinstance(v, (int, float))
+            }
+            write_run_metadata(
+                out_dir,
+                model_def,
+                {
+                    "train": dataset_dir / "train.jsonl",
+                    "val": dataset_dir / "val.jsonl",
+                },
+                extra={
+                    "run_id": run.run_id,
+                    "smoke": smoke,
+                    "device": str(target_device),
+                    "profile": profile.name,
+                    "distributed": distributed,
+                    "precision": cfg.precision,
+                    "model_revision": cfg.model_revision,
+                    "processor_class": type(processor).__name__ if processor is not None else None,
+                    "frozen_component_sha256": frozen.hashes,
+                    **save_meta,
+                },
+            )
+            finish_run(model_def, run.run_id, "completed", metrics=metrics_out)
+            reporter.update(stage="completed")
+
+            return SFTTrainResult(
+                out_dir=out_dir,
+                metrics=metrics_out,
+                train_runtime=float(
+                    getattr(train_output, "metrics", {}).get("train_runtime", 0.0)
+                    if hasattr(train_output, "metrics")
+                    else 0.0
+                ),
+            )
+    except TrainingInterrupted as exc:
+        reporter.update(stage="interrupted")
+        finish_run(model_def, run.run_id, "interrupted", error=str(exc))
+        raise
     except (Exception, KeyboardInterrupt) as exc:
+        reporter.update(stage="failed")
         finish_run(model_def, run.run_id, "aborted", error=str(exc) or type(exc).__name__)
         raise

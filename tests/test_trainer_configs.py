@@ -317,3 +317,35 @@ def test_trainer_and_predictor_resolve_identical_special_tokens(tmp_path) -> Non
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert resolve_special_tokens(bad)["pad_token"] == "<PAD>"
+
+
+def test_sft_config_optimizer_scheduler_grad_clip_and_save_options() -> None:
+    default = SFTTrainConfig()
+    assert default.optim == "adamw_torch"
+    assert default.lr_scheduler_type == "linear"
+    assert default.lr_scheduler_kwargs is None
+    assert default.max_grad_norm == 1.0
+    assert default.save_strategy == "steps"
+    assert default.save_only_model is False
+
+    custom = SFTTrainConfig(
+        optim="adamw_bnb_8bit",
+        lr_scheduler_type="cosine",
+        lr_scheduler_kwargs={"num_cycles": 2},
+        max_grad_norm=0.5,
+        save_strategy="epoch",
+        save_only_model=True,
+    )
+    assert custom.optim == "adamw_bnb_8bit"
+    assert custom.lr_scheduler_type == "cosine"
+    assert custom.lr_scheduler_kwargs == {"num_cycles": 2}
+    assert custom.max_grad_norm == 0.5
+    assert custom.save_strategy == "epoch"
+    assert custom.save_only_model is True
+
+    with pytest.raises(ValidationError):
+        SFTTrainConfig(save_strategy="invalid")
+    with pytest.raises(ValidationError):
+        SFTTrainConfig(max_grad_norm=-0.1)
+    with pytest.raises(ValidationError):
+        SFTTrainConfig(optim="  ")
