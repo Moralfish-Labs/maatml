@@ -5,12 +5,62 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from ..utils.io import sha256_file
 
 READY_FILE = "maatml-checkpoint-ready.json"
 READY_KIND = "maatml.sft-checkpoint-ready/1"
+
+
+def _has_regular_file(checkpoint: Path, name: str, files: Optional[set[str]]) -> bool:
+    if files is not None and name not in files:
+        return False
+    target = checkpoint / name
+    return not target.is_symlink() and target.is_file()
+
+
+def _has_sharded_weights(checkpoint: Path, index_name: str, files: Optional[set[str]]) -> bool:
+    if not _has_regular_file(checkpoint, index_name, files):
+        return False
+    try:
+        data = json.loads((checkpoint / index_name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    weight_map = data.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        return False
+    shards: set[str] = set()
+    for shard in weight_map.values():
+        if (
+            not isinstance(shard, str)
+            or not shard
+            or Path(shard).name != shard
+            or not shard.endswith(".safetensors")
+        ):
+            return False
+        shards.add(shard)
+    return all(_has_regular_file(checkpoint, shard, files) for shard in shards)
+
+
+def has_model_weights(checkpoint: Path, files: Optional[set[str]] = None) -> bool:
+    """True when ``config.json`` and single-file or sharded safetensors exist."""
+    if not _has_regular_file(checkpoint, "config.json", files):
+        return False
+    return _has_regular_file(checkpoint, "model.safetensors", files) or _has_sharded_weights(
+        checkpoint, "model.safetensors.index.json", files
+    )
+
+
+def has_adapter_weights(checkpoint: Path, files: Optional[set[str]] = None) -> bool:
+    """True when ``adapter_config.json`` and single-file or sharded adapter weights exist."""
+    if not _has_regular_file(checkpoint, "adapter_config.json", files):
+        return False
+    return _has_regular_file(
+        checkpoint, "adapter_model.safetensors", files
+    ) or _has_sharded_weights(checkpoint, "adapter_model.safetensors.index.json", files)
 
 
 def checkpoint_files(checkpoint: Path) -> dict[str, str]:
@@ -31,9 +81,10 @@ def publish_sft_checkpoint(checkpoint: Path, step: int, spec_hash: str) -> None:
     checkpoint = Path(checkpoint)
     files = checkpoint_files(checkpoint)
     required = {"trainer_state.json", "optimizer.pt", "scheduler.pt", "rng_state.pth"}
-    adapter = {"adapter_config.json", "adapter_model.safetensors"}
-    merged = {"config.json", "model.safetensors"}
-    if not required <= files.keys() or not (adapter <= files.keys() or merged <= files.keys()):
+    file_names = set(files.keys())
+    if not required <= file_names or not (
+        has_adapter_weights(checkpoint, file_names) or has_model_weights(checkpoint, file_names)
+    ):
         raise ValueError("SFT snapshot requires complete single-process optimizer and weights")
     state = json.loads((checkpoint / "trainer_state.json").read_text())
     if state.get("global_step") != step or checkpoint.name != f"checkpoint-{step}":
@@ -69,9 +120,9 @@ def verify_sft_checkpoint(checkpoint: Path, step: int, spec_hash: str) -> None:
         raise ValueError("SFT checkpoint completion evidence differs from saved files")
     required = {"trainer_state.json", "optimizer.pt", "scheduler.pt", "rng_state.pth"}
     files = payload["files"]
-    if not required <= files.keys() or not (
-        {"adapter_config.json", "adapter_model.safetensors"} <= files.keys()
-        or {"config.json", "model.safetensors"} <= files.keys()
+    file_names = set(files.keys())
+    if not required <= file_names or not (
+        has_adapter_weights(checkpoint, file_names) or has_model_weights(checkpoint, file_names)
     ):
         raise ValueError("SFT completion evidence lacks resumable state")
     state = json.loads((checkpoint / "trainer_state.json").read_text())

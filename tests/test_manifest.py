@@ -290,3 +290,24 @@ def test_amend_refuses_a_file_outside_the_export(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="outside the export directory"):
         amend_manifest(export_dir, [outside])
+
+
+def test_verify_detects_unlisted_files(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    listed = export_dir / "model.safetensors"
+    listed.write_bytes(b"weights")
+    write_json(
+        export_dir / "manifest.json",
+        {"files": [{"path": "model.safetensors", "sha256": sha256_file(listed)}]},
+    )
+    assert verify_manifest(export_dir) == []
+
+    (export_dir / "rogue.txt").write_text("surprise", encoding="utf-8")
+    nested = export_dir / "extra" / "weights.bin"
+    nested.parent.mkdir()
+    nested.write_bytes(b"hidden")
+
+    errors = verify_manifest(export_dir)
+    assert "unlisted file: rogue.txt" in errors
+    assert "unlisted file: extra/weights.bin" in errors

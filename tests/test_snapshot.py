@@ -169,3 +169,38 @@ def test_symlink_checkpoint_is_not_backed_up(tmp_path, monkeypatch):
     checkpoint.symlink_to(outside, target_is_directory=True)
     with pytest.raises(BundleError, match="trainer stopped"):
         call(md, marker, tmp_path / "backup.tar.gz")
+
+
+def test_sharded_policy_checkpoint_and_fast_compression(tmp_path, monkeypatch):
+    md, marker, run, checkpoint, _rec = fixture(tmp_path, monkeypatch)
+    (checkpoint / "model.safetensors").unlink()
+    (checkpoint / "model-00001-of-00002.safetensors").write_bytes(b"shard-1")
+    (checkpoint / "model-00002-of-00002.safetensors").write_bytes(b"shard-2")
+    (checkpoint / "model.safetensors.index.json").write_text(
+        '{"weight_map":{"a":"model-00001-of-00002.safetensors",'
+        '"b":"model-00002-of-00002.safetensors"}}'
+    )
+
+    compress_levels: list[int | None] = []
+    real_open = tarfile.open
+
+    def _spy_open(*args, **kwargs):
+        compress_levels.append(kwargs.get("compresslevel"))
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr("maatml.snapshot.tarfile.open", _spy_open)
+    out = call(md, marker, tmp_path / "sharded.tar.gz")
+    assert compress_levels == [1]
+    manifest = read_bundle_manifest(out)
+    assert {item["path"] for item in manifest["files"]} >= {
+        "run/checkpoint-500/model.safetensors.index.json",
+        "run/checkpoint-500/model-00001-of-00002.safetensors",
+        "run/checkpoint-500/model-00002-of-00002.safetensors",
+    }
+
+    with pytest.raises(BundleError, match="compresslevel"):
+        call(md, marker, tmp_path / "bad.tar.gz", compresslevel=10)
+
+    (checkpoint / "model-00002-of-00002.safetensors").unlink()
+    with pytest.raises(BundleError, match="trainer stopped"):
+        call(md, marker, tmp_path / "missing-shard.tar.gz")

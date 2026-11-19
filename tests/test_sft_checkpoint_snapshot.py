@@ -187,3 +187,130 @@ def test_prune_before_enumeration_preserves_previous_backup(tmp_path, monkeypatc
     with pytest.raises(BundleError, match="trainer stopped"):
         call(md, marker, out)
     assert out.read_bytes() == b"previous verified backup"
+
+
+def test_sharded_sft_checkpoint_publishes_and_verifies(tmp_path):
+    path = tmp_path / "checkpoint-2"
+    path.mkdir()
+    for name in ("config.json", "optimizer.pt", "scheduler.pt", "rng_state.pth"):
+        (path / name).write_bytes(b"synthetic " + name.encode())
+    (path / "trainer_state.json").write_text(json.dumps({"global_step": 2}))
+    (path / "model-00001-of-00002.safetensors").write_bytes(b"shard1")
+    (path / "model-00002-of-00002.safetensors").write_bytes(b"shard2")
+    index_path = path / "model.safetensors.index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "w1": "model-00001-of-00002.safetensors",
+                    "w2": "model-00002-of-00002.safetensors",
+                }
+            }
+        )
+    )
+    publish_sft_checkpoint(path, 2, "recipe")
+    verify_sft_checkpoint(path, 2, "recipe")
+
+    # Missing shard is rejected before publishing.
+    (path / READY_FILE).unlink()
+    (path / "model-00002-of-00002.safetensors").unlink()
+    with pytest.raises(ValueError, match="optimizer and weights"):
+        publish_sft_checkpoint(path, 2, "recipe")
+
+    # Path traversal in weight_map is rejected.
+    (path / "model-00002-of-00002.safetensors").write_bytes(b"shard2")
+    index_path.write_text(json.dumps({"weight_map": {"w1": "../escape.safetensors"}}))
+    with pytest.raises(ValueError, match="optimizer and weights"):
+        publish_sft_checkpoint(path, 2, "recipe")
+
+
+def test_sft_snapshots_reject_no_save_and_forward_training_args(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    pytest.importorskip("peft")
+    from maatml.config import ModelDefinition
+    from maatml.training import sft_base
+
+    for bad_opts in (
+        {"save_strategy": "no"},
+        {"save_only_model": True},
+    ):
+        md = ModelDefinition(
+            name="snap-guard",
+            model_id="snap-guard",
+            architecture="causal_sft",
+            version="0.1.0",
+            training={
+                "model_id": "toy",
+                "checkpoint_snapshots": True,
+                **bad_opts,
+            },
+            dataset={"prompt_spec": "prompt.json"},
+        )
+        object.__setattr__(md, "model_dir", tmp_path)
+        (tmp_path / "prompt.json").write_text('{"system":"S","user_template":"<<USER_REQUEST>>"}')
+        with pytest.raises(ValueError, match="checkpoint snapshots require"):
+            sft_base.train_sft(md, device="cpu")
+
+    # Verify TrainingArguments receives custom optim/scheduler/clip/save fields.
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
+
+    backend = Tokenizer(WordLevel({"[PAD]": 0, "[UNK]": 1, "a": 2, "b": 3}, unk_token="[UNK]"))
+    backend.pre_tokenizer = Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend, pad_token="[PAD]", unk_token="[UNK]", bos_token="a", eos_token="b"
+    )
+    tokenizer.chat_template = "{% for m in messages %}{{ m['content'] }} {% endfor %}"
+    tiny = GPT2LMHeadModel(GPT2Config(vocab_size=4, n_embd=8, n_layer=1, n_head=1, n_positions=16))
+    monkeypatch.setattr(sft_base.AutoTokenizer, "from_pretrained", lambda *a, **kw: tokenizer)
+    monkeypatch.setattr(sft_base.AutoModelForCausalLM, "from_pretrained", lambda *a, **kw: tiny)
+
+    captured_args = []
+    real_trainer = sft_base.Trainer
+
+    class _SpyTrainer(real_trainer):
+        def __init__(self, *args, **kwargs):
+            captured_args.append(kwargs.get("args") or args[1])
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(sft_base, "Trainer", _SpyTrainer)
+    md2 = ModelDefinition(
+        name="args-pass",
+        model_id="args-pass",
+        architecture="causal_sft",
+        version="0.1.0",
+        training={
+            "model_id": "toy",
+            "max_input_tokens": 16,
+            "precision": "fp32",
+            "batch_size": 1,
+            "grad_accum": 1,
+            "max_steps": 1,
+            "disable_tqdm": True,
+            "lora": {"enabled": False},
+            "optim": "adamw_torch",
+            "lr_scheduler_type": "cosine",
+            "lr_scheduler_kwargs": {"num_cycles": 0.5},
+            "max_grad_norm": 0.25,
+            "save_strategy": "no",
+            "save_only_model": True,
+        },
+        dataset={"prompt_spec": "prompt.json"},
+    )
+    object.__setattr__(md2, "model_dir", tmp_path / "m2")
+    md2.model_dir.mkdir()
+    (md2.model_dir / "prompt.json").write_text('{"system":"S","user_template":"<<USER_REQUEST>>"}')
+    md2.prepared_dir.mkdir(parents=True)
+    (md2.prepared_dir / "train.jsonl").write_text('{"request":"a","expected_output":"b"}\n')
+    (md2.prepared_dir / "val.jsonl").write_text("")
+
+    sft_base.train_sft(md2, device="cpu")
+    args = captured_args[0]
+    assert args.optim == "adamw_torch"
+    assert args.lr_scheduler_type == "cosine"
+    assert args.lr_scheduler_kwargs == {"num_cycles": 0.5}
+    assert args.max_grad_norm == 0.25
+    assert args.save_strategy == "no"
+    assert args.save_only_model is True

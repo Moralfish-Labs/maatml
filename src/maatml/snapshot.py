@@ -17,7 +17,7 @@ from .config import ModelDefinition
 from .environment import environment_manifest
 from .portable import BUNDLE_KIND, MANIFEST, BundleError
 from .runs import RunRecord, list_runs, spec_fingerprint
-from .training.checkpoint_snapshot import READY_FILE, verify_sft_checkpoint
+from .training.checkpoint_snapshot import READY_FILE, has_model_weights, verify_sft_checkpoint
 from .utils.io import sha256_file
 
 
@@ -44,6 +44,7 @@ def snapshot_checkpoint(
     out: Path,
     poll_seconds: float = 2.0,
     startup_seconds: float = 120.0,
+    compresslevel: int = 1,
 ) -> Path:
     """Wait for a complete native checkpoint, then atomically publish its bundle.
 
@@ -55,6 +56,8 @@ def snapshot_checkpoint(
     """
     if min_step < 1 or poll_seconds <= 0:
         raise BundleError("min_step and poll_seconds must be positive")
+    if compresslevel < 0 or compresslevel > 9:
+        raise BundleError("compresslevel must be between 0 and 9")
     since = started_after.stat().st_mtime
     startup_deadline = time.monotonic() + startup_seconds
     fingerprint = spec_fingerprint(model_def)
@@ -88,11 +91,7 @@ def snapshot_checkpoint(
                 suffix.isdigit()
                 and int(suffix) >= min_step
                 and (
-                    (
-                        (checkpoint / "training_state.pt").is_file()
-                        and (checkpoint / "model.safetensors").is_file()
-                        and (checkpoint / "config.json").is_file()
-                    )
+                    ((checkpoint / "training_state.pt").is_file() and has_model_weights(checkpoint))
                     or (checkpoint / READY_FILE).is_file()
                 )
             ):
@@ -102,7 +101,16 @@ def snapshot_checkpoint(
             try:
                 if is_sft:
                     verify_sft_checkpoint(checkpoint, step, fingerprint)
-                return _publish(model_def, record, run_dir, checkpoint, step, out, is_sft)
+                return _publish(
+                    model_def,
+                    record,
+                    run_dir,
+                    checkpoint,
+                    step,
+                    out,
+                    is_sft,
+                    compresslevel,
+                )
             except FileNotFoundError:
                 # A checkpoint may be pruned during the copy. Never publish a
                 # partial archive; retry against the next complete checkpoint.
@@ -120,6 +128,7 @@ def _publish(
     step: int,
     out: Path,
     is_sft: bool,
+    compresslevel: int = 1,
 ) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=out.parent) as scratch:
@@ -141,9 +150,10 @@ def _publish(
                 raise BundleError("SFT snapshot requires a native recipe fingerprint")
             verify_sft_checkpoint(copied_checkpoint, step, record.spec_hash)
         else:
-            for name in ("training_state.pt", "model.safetensors", "config.json"):
-                if not (copied_checkpoint / name).is_file():
-                    raise FileNotFoundError(copied_checkpoint / name)
+            if not (copied_checkpoint / "training_state.pt").is_file():
+                raise FileNotFoundError(copied_checkpoint / "training_state.pt")
+            if not has_model_weights(copied_checkpoint):
+                raise FileNotFoundError(copied_checkpoint / "model.safetensors")
         manifest: dict[str, Any] = {
             "kind": BUNDLE_KIND,
             "run_id": record.run_id,
@@ -159,7 +169,7 @@ def _publish(
         for name, target in entries:
             digest = sha256_file(target)
             manifest["files"].append({"path": name, "sha256": digest})
-        with tarfile.open(archive, "w:gz") as tar:
+        with tarfile.open(archive, "w:gz", compresslevel=compresslevel) as tar:
             body = json.dumps(manifest, sort_keys=True).encode()
             info = tarfile.TarInfo(MANIFEST)
             info.size = len(body)
