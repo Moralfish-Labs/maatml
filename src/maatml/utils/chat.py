@@ -41,7 +41,16 @@ _ROLE_ALIASES = {
 DEFAULT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
 
 _TOOL_CALL_RX = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.S)
-_EMPTY_THINK_RX = re.compile(r"^\s*<think>\s*</think>\s*", re.S)
+_GEMMA4_TOOL_CALL_RX = re.compile(r"<\|tool_call>\s*(.*?)\s*<tool_call\|>", re.S)
+_ANY_TOOL_CALL_RX = re.compile(
+    r"<tool_call>\s*(?P<hermes>.*?)\s*</tool_call>"
+    r"|<\|tool_call>\s*(?P<gemma4>.*?)\s*<tool_call\|>",
+    re.S,
+)
+_EMPTY_THINK_RX = re.compile(
+    r"^\s*(?:<think>\s*</think>|<\|channel>thought\s*<channel\|>)\s*",
+    re.S,
+)
 
 
 class ChatSpanError(ValueError):
@@ -371,36 +380,179 @@ def expected_fragments(message: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def parse_tool_calls(text: str) -> ParsedAssistant:
-    """Split generated text into prose and ``<tool_call>`` JSON blocks.
+_GEMMA4_STR_DELIM = '<|"|>'
 
-    Each block is ``{"name": ..., "arguments": {...}}`` (Hermes / Qwen form).
-    Calls come back in the message shape rows use, with ``arguments`` as a
-    parsed object. A leading empty think block is ignored; an unclosed block or
-    one that is not a JSON object is reported in ``errors``.
+
+def _skip_ws(text: str, pos: int) -> int:
+    n = len(text)
+    while pos < n and text[pos].isspace():
+        pos += 1
+    return pos
+
+
+def _parse_gemma4_string(text: str, pos: int) -> tuple[str, int]:
+    start = pos + len(_GEMMA4_STR_DELIM)
+    end = text.find(_GEMMA4_STR_DELIM, start)
+    if end < 0:
+        raise ValueError("unterminated Gemma 4 string delimiter")
+    return text[start:end], end + len(_GEMMA4_STR_DELIM)
+
+
+def _parse_gemma4_key(text: str, pos: int) -> tuple[str, int]:
+    pos = _skip_ws(text, pos)
+    if text.startswith(_GEMMA4_STR_DELIM, pos):
+        return _parse_gemma4_string(text, pos)
+    if pos < len(text) and text[pos] == '"':
+        val, end = json.JSONDecoder().raw_decode(text, pos)
+        if not isinstance(val, str):
+            raise ValueError("expected string key")
+        return val, end
+    end = pos
+    n = len(text)
+    while end < n and text[end] not in ":{}[], \t\r\n":
+        end += 1
+    if end == pos:
+        raise ValueError(f"expected object key at position {pos}")
+    return text[pos:end], end
+
+
+def _parse_gemma4_value(text: str, pos: int) -> tuple[Any, int]:
+    pos = _skip_ws(text, pos)
+    if pos >= len(text):
+        raise ValueError("unexpected end of Gemma 4 tool-call arguments")
+    if text.startswith(_GEMMA4_STR_DELIM, pos):
+        return _parse_gemma4_string(text, pos)
+    ch = text[pos]
+    if ch == "{":
+        return _parse_gemma4_dict(text, pos)
+    if ch == "[":
+        return _parse_gemma4_array(text, pos)
+    if ch == '"':
+        val, end = json.JSONDecoder().raw_decode(text, pos)
+        return val, end
+    for literal, value in (("true", True), ("false", False), ("null", None)):
+        if text.startswith(literal, pos):
+            after = pos + len(literal)
+            if after >= len(text) or text[after] in ",}] \t\r\n":
+                return value, after
+    num_match = re.match(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?", text[pos:])
+    if num_match:
+        token = num_match.group(0)
+        after = pos + len(token)
+        if after >= len(text) or text[after] in ",}] \t\r\n":
+            parsed_num = float(token) if any(c in token for c in ".eE") else int(token)
+            return parsed_num, after
+    raise ValueError(f"unexpected token near {text[pos : pos + 20]!r}")
+
+
+def _parse_gemma4_array(text: str, pos: int) -> tuple[list[Any], int]:
+    pos = _skip_ws(text, pos + 1)
+    items: list[Any] = []
+    if pos < len(text) and text[pos] == "]":
+        return items, pos + 1
+    while True:
+        val, pos = _parse_gemma4_value(text, pos)
+        items.append(val)
+        pos = _skip_ws(text, pos)
+        if pos >= len(text):
+            raise ValueError("unterminated array in Gemma 4 tool call")
+        if text[pos] == "]":
+            return items, pos + 1
+        if text[pos] != ",":
+            raise ValueError(f"expected ',' or ']' at position {pos}")
+        pos = _skip_ws(text, pos + 1)
+
+
+def _parse_gemma4_dict(text: str, pos: int) -> tuple[dict[str, Any], int]:
+    pos = _skip_ws(text, pos)
+    if pos >= len(text) or text[pos] != "{":
+        raise ValueError(f"expected '{{' at position {pos}")
+    pos = _skip_ws(text, pos + 1)
+    out: dict[str, Any] = {}
+    if pos < len(text) and text[pos] == "}":
+        return out, pos + 1
+    while True:
+        key, pos = _parse_gemma4_key(text, pos)
+        pos = _skip_ws(text, pos)
+        if pos >= len(text) or text[pos] != ":":
+            raise ValueError(f"expected ':' after key {key!r}")
+        val, pos = _parse_gemma4_value(text, pos + 1)
+        out[key] = val
+        pos = _skip_ws(text, pos)
+        if pos >= len(text):
+            raise ValueError("unterminated object in Gemma 4 tool call")
+        if text[pos] == "}":
+            return out, pos + 1
+        if text[pos] != ",":
+            raise ValueError(f"expected ',' or '}}' at position {pos}")
+        pos = _skip_ws(text, pos + 1)
+
+
+def _parse_gemma4_tool_call(block: str) -> tuple[str, dict[str, Any]]:
+    body = block.strip()
+    if not body.startswith("call:"):
+        raise ValueError("Gemma 4 tool_call must start with 'call:'")
+    rest = body[len("call:") :]
+    brace_at = rest.find("{")
+    if brace_at < 0:
+        raise ValueError("Gemma 4 tool_call has no arguments block")
+    name = rest[:brace_at].strip()
+    if not name:
+        raise ValueError("Gemma 4 tool_call has no function name")
+    args, end = _parse_gemma4_dict(rest, brace_at)
+    trailing = rest[end:].strip()
+    if trailing:
+        raise ValueError(f"unexpected trailing content in Gemma 4 tool_call: {trailing!r}")
+    return name, args
+
+
+def parse_tool_calls(text: str) -> ParsedAssistant:
+    """Split generated text into prose and tool-call blocks.
+
+    Supports both Hermes/Qwen ``<tool_call>{...}</tool_call>`` JSON blocks and
+    Gemma 4 ``<|tool_call>call:name{...}<tool_call|>`` blocks. Calls come back
+    in the message shape rows use, with ``arguments`` as a parsed object. A
+    leading empty think or Gemma 4 thought channel block is ignored; an unclosed
+    or malformed block is reported in ``errors``.
     """
     text = _EMPTY_THINK_RX.sub("", text or "")
     parsed = ParsedAssistant(content="")
-    for n, block in enumerate(_TOOL_CALL_RX.findall(text)):
-        try:
-            obj = json.loads(block)
-        except ValueError as exc:
-            parsed.errors.append(f"tool_call[{n}] is not JSON: {exc}")
-            continue
-        if not isinstance(obj, dict) or not isinstance(obj.get("name"), str):
-            parsed.errors.append(f"tool_call[{n}] has no name")
-            continue
-        args = obj.get("arguments", {})
-        if isinstance(args, str):
+    for n, match in enumerate(_ANY_TOOL_CALL_RX.finditer(text)):
+        hermes_block = match.group("hermes")
+        if hermes_block is not None:
             try:
-                args = json.loads(args)
-            except ValueError:
-                parsed.errors.append(f"tool_call[{n}] arguments are not JSON")
+                obj = json.loads(hermes_block)
+            except ValueError as exc:
+                parsed.errors.append(f"tool_call[{n}] is not JSON: {exc}")
+                continue
+            if not isinstance(obj, dict) or not isinstance(obj.get("name"), str):
+                parsed.errors.append(f"tool_call[{n}] has no name")
+                continue
+            args = obj.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    parsed.errors.append(f"tool_call[{n}] arguments are not JSON")
+            parsed.tool_calls.append(
+                {"type": "function", "function": {"name": obj["name"], "arguments": args}}
+            )
+            continue
+
+        gemma4_block = match.group("gemma4") or ""
+        try:
+            name, args = _parse_gemma4_tool_call(gemma4_block)
+        except ValueError as exc:
+            parsed.errors.append(f"tool_call[{n}] invalid Gemma 4 block: {exc}")
+            continue
         parsed.tool_calls.append(
-            {"type": "function", "function": {"name": obj["name"], "arguments": args}}
+            {"type": "function", "function": {"name": name, "arguments": args}}
         )
-    rest = _TOOL_CALL_RX.sub("", text)
+
+    rest = _ANY_TOOL_CALL_RX.sub("", text)
     if "<tool_call>" in rest or "</tool_call>" in rest:
         parsed.errors.append("unterminated <tool_call> block")
+    if "<|tool_call>" in rest or "<tool_call|>" in rest:
+        parsed.errors.append("unterminated <|tool_call> block")
     parsed.content = rest.strip()
     return parsed

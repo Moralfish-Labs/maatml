@@ -35,6 +35,114 @@ def _count_truncation(tokenizer, text: str, max_len: int, encoded_len: int) -> b
     return len(full) > max_len
 
 
+def _load_run_metadata(checkpoint_dir: Path) -> dict[str, Any]:
+    meta_path = Path(checkpoint_dir) / "run_metadata.json"
+    if not meta_path.is_file():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_eval_precision(
+    meta: dict[str, Any],
+    model_def: Optional[ModelDefinition],
+    *,
+    default: str = "bf16",
+) -> str:
+    """Resolve evaluation precision from run metadata, falling back to model_def."""
+    from ..training.sft_config import validate_precision
+
+    extra = meta.get("extra") or {}
+    spec = meta.get("spec") or {}
+    candidates: list[Any] = [extra.get("precision")]
+    if extra.get("smoke"):
+        candidates.append((spec.get("smoke") or {}).get("precision"))
+    candidates.append((spec.get("training") or {}).get("precision"))
+    if model_def is not None:
+        candidates.append((model_def.training or {}).get("precision"))
+    for raw in candidates:
+        if isinstance(raw, str) and raw.strip():
+            return validate_precision(raw.strip())
+    return validate_precision(default)
+
+
+def _resolve_eval_dtype(torch_mod: Any, device: Any, precision: str) -> Any:
+    """Map resolved training precision + target device to a torch dtype."""
+    if getattr(device, "type", None) not in ("mps", "cuda"):
+        return torch_mod.float32
+    if precision == "bf16":
+        return torch_mod.bfloat16
+    if precision == "fp16":
+        return torch_mod.float16
+    return torch_mod.float32
+
+
+def _resolve_base_revision(
+    meta: dict[str, Any],
+    model_def: Optional[ModelDefinition],
+    adapter_cfg: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    extra = meta.get("extra") or {}
+    spec_training = (meta.get("spec") or {}).get("training") or {}
+    model_training = (model_def.training or {}) if model_def is not None else {}
+    for raw in (
+        extra.get("model_revision"),
+        spec_training.get("model_revision"),
+        model_training.get("model_revision"),
+        (adapter_cfg or {}).get("revision"),
+    ):
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _is_image_text_checkpoint(checkpoint_dir: Path, meta: dict[str, Any]) -> bool:
+    extra = meta.get("extra") or {}
+    if extra.get("processor_class"):
+        return True
+    ckpt = Path(checkpoint_dir)
+    if (ckpt / "preprocessor_config.json").is_file() or (ckpt / "processor_config.json").is_file():
+        return True
+    cfg_path = ckpt / "config.json"
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cfg = {}
+        if isinstance(cfg, dict) and any(
+            k in cfg for k in ("vision_config", "image_token_id", "image_token_index")
+        ):
+            return True
+    return False
+
+
+def _load_causal_or_image_text(
+    model_ref: str | Path,
+    *,
+    dtype: Any,
+    revision: Optional[str],
+    prefer_image_text: bool,
+) -> Any:
+    from transformers import AutoModelForCausalLM
+
+    kwargs: dict[str, Any] = {"dtype": dtype}
+    if revision is not None:
+        kwargs["revision"] = revision
+    if prefer_image_text:
+        from transformers import AutoModelForImageTextToText
+
+        return AutoModelForImageTextToText.from_pretrained(model_ref, **kwargs)
+    try:
+        return AutoModelForCausalLM.from_pretrained(model_ref, **kwargs)
+    except ValueError:
+        from transformers import AutoModelForImageTextToText
+
+        return AutoModelForImageTextToText.from_pretrained(model_ref, **kwargs)
+
+
 def _load_head_specs(checkpoint_dir: Path, model_def: Optional[ModelDefinition]) -> list[dict]:
     """Load head configs from run_metadata.json, falling back to model.yml."""
     meta_path = Path(checkpoint_dir) / "run_metadata.json"
@@ -272,13 +380,28 @@ class Seq2SeqPredictor:
             self._repair_braces = bool((model_def.evaluation or {}).get("repair_braces", False))
 
         checkpoint_dir = Path(checkpoint_dir)
+        meta = _load_run_metadata(checkpoint_dir)
+        precision = _resolve_eval_precision(meta, model_def)
+        inference_dtype = _resolve_eval_dtype(torch, self._device, precision)
         self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, use_fast=True)
-        inference_dtype = torch.float16 if self._device.type in ("mps", "cuda") else torch.float32
         model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint_dir, dtype=inference_dtype).to(
             self._device
         )
         model.eval()
         self._model = model
+
+    def _apply_brace_repair(self, gen_text: str) -> str:
+        if not self._repair_braces or not gen_text:
+            return gen_text
+        # T5 SentencePiece maps `{`/`}` to <unk>; skip_special_tokens strips them.
+        repaired = gen_text
+        if not repaired.startswith("{"):
+            repaired = "{" + repaired
+        if not repaired.endswith("}"):
+            repaired = repaired + "}"
+        if repaired != gen_text:
+            self._repairs += 1
+        return repaired
 
     def predict(self, row: dict) -> str:
         assert self._model is not None and self._tokenizer is not None
@@ -308,17 +431,46 @@ class Seq2SeqPredictor:
             )
 
         gen_text = self._tokenizer.decode(generated[0], skip_special_tokens=True).strip()
-        if not self._repair_braces or not gen_text:
-            return gen_text
-        # T5 SentencePiece maps `{`/`}` to <unk>; skip_special_tokens strips them.
-        repaired = gen_text
-        if not repaired.startswith("{"):
-            repaired = "{" + repaired
-        if not repaired.endswith("}"):
-            repaired = repaired + "}"
-        if repaired != gen_text:
-            self._repairs += 1
-        return repaired
+        return self._apply_brace_repair(gen_text)
+
+    def predict_batch(self, rows: list[dict]) -> list[str]:
+        assert self._model is not None and self._tokenizer is not None
+        if not rows:
+            return []
+        if len(rows) == 1:
+            return [self.predict(rows[0])]
+        torch = self._torch
+        sources = [self._task_prefix + (row.get(self._request_field, "") or "") for row in rows]
+        enc = self._tokenizer(
+            sources,
+            max_length=self._max_input_tokens,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        ).to(self._device)
+        attn = enc.get("attention_mask")
+        for i, source in enumerate(sources):
+            if attn is not None:
+                encoded_len = int(attn[i].sum().item())
+            else:
+                encoded_len = int(enc["input_ids"][i].shape[-1])
+            if _count_truncation(self._tokenizer, source, self._max_input_tokens, encoded_len):
+                self._truncated += 1
+
+        with torch.inference_mode():
+            generated = self._model.generate(
+                input_ids=enc["input_ids"],
+                attention_mask=enc["attention_mask"],
+                max_new_tokens=self._max_new_tokens,
+                num_beams=1,
+                do_sample=False,
+            )
+
+        outputs: list[str] = []
+        for seq in generated:
+            gen_text = self._tokenizer.decode(seq, skip_special_tokens=True).strip()
+            outputs.append(self._apply_brace_repair(gen_text))
+        return outputs
 
 
 class CausalSFTPredictor:
@@ -327,6 +479,7 @@ class CausalSFTPredictor:
     def __init__(self) -> None:
         self._model: Any = None
         self._tokenizer: Any = None
+        self._processor: Any = None
         self._device: Any = None
         self._max_input_tokens = 2048
         self._max_new_tokens = 512
@@ -352,7 +505,7 @@ class CausalSFTPredictor:
     ) -> None:
         del schema_path, contracts_path
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoTokenizer
 
         from ..training.sft_base import render_chat_prompt, render_inference_prompt
         from ..utils.io import read_json
@@ -364,6 +517,7 @@ class CausalSFTPredictor:
         self._device = device if hasattr(device, "type") else resolve_device(str(device))
 
         checkpoint_dir = Path(checkpoint_dir)
+        meta = _load_run_metadata(checkpoint_dir)
         if prompt_spec_path is None:
             prompt_spec_path = resolve_eval_asset(
                 "prompt_spec",
@@ -381,39 +535,66 @@ class CausalSFTPredictor:
             if "max_new_tokens" in gen:
                 self._max_new_tokens = int(gen["max_new_tokens"])
 
-        self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, use_fast=True)
-        inference_dtype = torch.float16 if self._device.type in ("mps", "cuda") else torch.float32
+        is_image_text = _is_image_text_checkpoint(checkpoint_dir, meta)
+        self._processor = None
+        if is_image_text:
+            try:
+                from transformers import AutoProcessor
+
+                self._processor = AutoProcessor.from_pretrained(checkpoint_dir)
+                self._tokenizer = getattr(self._processor, "tokenizer", self._processor)
+            except Exception:  # noqa: BLE001  fall back to tokenizer when processor fails
+                self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, use_fast=True)
+        else:
+            self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, use_fast=True)
+
+        precision = _resolve_eval_precision(meta, model_def)
+        inference_dtype = _resolve_eval_dtype(torch, self._device, precision)
         adapter_cfg = checkpoint_dir / "adapter_config.json"
         adapter_subdir = checkpoint_dir / "adapter" / "adapter_config.json"
         if adapter_cfg.is_file() or adapter_subdir.is_file():
             from peft import PeftModel
 
             adapter_dir = checkpoint_dir if adapter_cfg.is_file() else checkpoint_dir / "adapter"
-            base_id = None
-            meta_path = checkpoint_dir / "run_metadata.json"
-            if meta_path.is_file():
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                extra = meta.get("extra") or {}
-                base_id = extra.get("base_model_id") or (meta.get("spec") or {}).get("base_model")
+            acfg = json.loads((adapter_dir / "adapter_config.json").read_text(encoding="utf-8"))
+            extra = meta.get("extra") or {}
+            base_id = extra.get("base_model_id") or (meta.get("spec") or {}).get("base_model")
             if base_id is None and model_def is not None:
                 base_id = (model_def.training or {}).get("model_id") or model_def.base_model
             if not base_id:
                 # PEFT adapter_config.json stores base_model_name_or_path.
-                acfg = json.loads((adapter_dir / "adapter_config.json").read_text(encoding="utf-8"))
                 base_id = acfg.get("base_model_name_or_path")
             if not base_id:
                 raise FileNotFoundError(
                     f"Adapter checkpoint at {adapter_dir} but no base model id found "
                     "(set run_metadata.extra.base_model_id or training.model_id)"
                 )
-            base = AutoModelForCausalLM.from_pretrained(base_id, dtype=inference_dtype)
+            base_revision = _resolve_base_revision(meta, model_def, acfg)
+            base = _load_causal_or_image_text(
+                base_id,
+                dtype=inference_dtype,
+                revision=base_revision,
+                prefer_image_text=is_image_text,
+            )
             model = PeftModel.from_pretrained(base, adapter_dir).to(self._device)
         else:
-            model = AutoModelForCausalLM.from_pretrained(checkpoint_dir, dtype=inference_dtype).to(
-                self._device
-            )
+            model = _load_causal_or_image_text(
+                checkpoint_dir,
+                dtype=inference_dtype,
+                revision=None,
+                prefer_image_text=is_image_text,
+            ).to(self._device)
         model.eval()
         self._model = model
+
+    def _pad_token_id(self) -> int:
+        pad = getattr(self._tokenizer, "pad_token_id", None)
+        if pad is not None:
+            return int(pad)
+        eos = getattr(self._tokenizer, "eos_token_id", None)
+        if eos is not None:
+            return int(eos)
+        return 0
 
     def _uses_messages(self, row: dict) -> bool:
         """A ``messages`` row is rendered from its own turns when it carries
@@ -456,15 +637,57 @@ class CausalSFTPredictor:
             self._truncated += 1
             input_ids = input_ids[-self._max_input_tokens :]
         tensor = torch.tensor([input_ids], dtype=torch.long, device=self._device)
+        mask = torch.ones_like(tensor)
         with torch.inference_mode():
             generated = self._model.generate(
                 input_ids=tensor,
+                attention_mask=mask,
                 max_new_tokens=self._max_new_tokens,
                 do_sample=False,
-                pad_token_id=self._tokenizer.pad_token_id or self._tokenizer.eos_token_id,
+                pad_token_id=self._pad_token_id(),
             )
         new_tokens = generated[0, tensor.shape[-1] :]
         return self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+    def predict_batch(self, rows: list[dict]) -> list[str]:
+        assert self._model is not None and self._tokenizer is not None
+        if not rows:
+            return []
+        if len(rows) == 1:
+            return [self.predict(rows[0])]
+        torch = self._torch
+        encoded: list[list[int]] = []
+        for row in rows:
+            ids = self.prompt_ids(row)
+            if self._max_input_tokens and len(ids) > self._max_input_tokens:
+                self._truncated += 1
+                ids = ids[-self._max_input_tokens :]
+            encoded.append(ids)
+
+        max_len = max((len(ids) for ids in encoded), default=0)
+        pad_id = self._pad_token_id()
+        tensor = torch.full((len(encoded), max_len), pad_id, dtype=torch.long, device=self._device)
+        mask = torch.zeros((len(encoded), max_len), dtype=torch.long, device=self._device)
+        for i, ids in enumerate(encoded):
+            if ids:
+                start = max_len - len(ids)
+                tensor[i, start:] = torch.tensor(ids, dtype=torch.long, device=self._device)
+                mask[i, start:] = 1
+
+        with torch.inference_mode():
+            generated = self._model.generate(
+                input_ids=tensor,
+                attention_mask=mask,
+                max_new_tokens=self._max_new_tokens,
+                do_sample=False,
+                pad_token_id=pad_id,
+            )
+
+        outputs: list[str] = []
+        for i in range(len(encoded)):
+            new_tokens = generated[i, max_len:]
+            outputs.append(self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip())
+        return outputs
 
 
 register_predictor("multi_head_classifier")(MultiHeadClassifierPredictor)
