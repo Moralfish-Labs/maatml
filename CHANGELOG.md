@@ -8,6 +8,33 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Added
+
+- Core served-model parity predictor (`served_http` / `serve_parity` in
+  `maatml.evaluation.served`) with OpenAI-compatible `/v1/chat/completions`
+  evaluation, export manifest SHA-256 and production gate verification,
+  server `/props` and `/v1/models` identity probing, and structured parity
+  comparison (`compare_parity`).
+- Selective reasoning-span loss masking for causal SFT
+  (`training.reasoning_loss: include | mask | reasoning_only`) handling
+  `<think>`, `<thought>`, `<|thought|>`, and Gemma 4 `<|channel>thought`
+  blocks with token-offset alignment and cache-key isolation.
+- Free-text action extension on the `maatml.rollout_env/1` protocol
+  (`free_text` capability, `step_text` operation over in-process and stdio
+  carriers, `rollout_free_text`, and the `arithmetic_world` reference
+  environment).
+- Verified-output `filtered_imitation` objective
+  (`maatml.training.filtered_imitation`, registered trainer
+  `filtered_imitation`) that filters rollout episodes strictly to
+  environment-verified passing trajectories with split-leakage guards,
+  trace-digest deduplication, optional seed mixing, and SFT handoff.
+- Environment-verified GRPO trainer (`maatml.training.grpo`, registered
+  trainer `grpo`) computing rewards strictly through the rollout environment
+  protocol (`EnvironmentRewardBridge`), anchoring KL divergence to a frozen
+  reference checkpoint, supporting multi-seed runs (`training.seeds`), and
+  enforcing held-out non-regression plus task-completion gain promotion
+  checks (`evaluate_grpo_promotion`), compatible with the `trl>=0.9` floor.
+
 ## [0.18.0] - 2026-11-12
 
 ### Added
