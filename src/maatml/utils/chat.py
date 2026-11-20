@@ -52,6 +52,37 @@ _EMPTY_THINK_RX = re.compile(
     re.S,
 )
 
+# Reasoning-span delimiters supported for selective loss masking during SFT.
+VALID_REASONING_LOSS_MODES = ("include", "mask", "reasoning_only")
+
+_REASONING_SPAN_RX = re.compile(
+    r"<think>.*?</think>"
+    r"|<thought>.*?</thought>"
+    r"|<\|thought\|>.*?<\|/thought\|>"
+    r"|<\|channel>thought.*?<channel\|>",
+    re.S,
+)
+
+
+def reasoning_char_spans(
+    text: str,
+    start: int = 0,
+    end: Optional[int] = None,
+) -> list[tuple[int, int]]:
+    """Return sorted, non-overlapping ``(start, end)`` char spans of closed
+    reasoning blocks inside ``text[start:end]``.
+
+    Recognizes ``<think>...</think>``, ``<thought>...</thought>``,
+    ``<|thought|>...<|/thought|>``, and Gemma 4 ``<|channel>thought...<channel|>``
+    delimiters. Unclosed opening tags are ignored so malformed prose never
+    silently masks an entire answer.
+    """
+    stop = len(text) if end is None else min(end, len(text))
+    begin = max(0, start)
+    if begin >= stop:
+        return []
+    return [(m.start(), m.end()) for m in _REASONING_SPAN_RX.finditer(text, begin, stop)]
+
 
 class ChatSpanError(ValueError):
     """An assistant turn could not be located exactly in the full render."""

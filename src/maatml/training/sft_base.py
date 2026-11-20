@@ -58,12 +58,14 @@ from ..device import (
 from ..progress import JobProgressReporter, make_progress_callback, resolve_progress_file
 from ..runs import begin_training_run, finish_run, normalize_report_to
 from ..utils.chat import (
+    VALID_REASONING_LOSS_MODES,
     ChatSpanError,
     assistant_char_spans,
     chat_template_options,
     expected_fragments,
     has_tool_features,
     normalize_messages,
+    reasoning_char_spans,
     render_chat,
 )
 from ..utils.io import iter_jsonl, read_json, sha256_file, stable_hash
@@ -255,6 +257,102 @@ def _verify_span(
             raise ChatSpanError(f"the supervised span is missing {fragment[:60]!r}")
 
 
+def _token_char_offsets(
+    span_text: str,
+    span_ids: list[int],
+    tokenizer: PreTrainedTokenizerBase,
+) -> list[tuple[int, int]]:
+    """Map each token in ``span_ids`` to its ``(start, end)`` char range inside
+    ``span_text``. Prefers fast tokenizer offset mappings when available and
+    exact, falling back to deterministic prefix-decode offsets."""
+    try:
+        encoded = tokenizer(
+            span_text,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+            return_tensors=None,
+        )
+        mapping = encoded.get("offset_mapping") if hasattr(encoded, "get") else None
+        ids = _flatten_token_list(encoded)
+        if mapping and ids == span_ids and len(mapping) == len(span_ids):
+            return [(int(a), int(b)) for a, b in mapping]
+    except (TypeError, ValueError, NotImplementedError, KeyError):
+        pass
+
+    decode = getattr(tokenizer, "decode", None)
+    if callable(decode):
+        offsets: list[tuple[int, int]] = []
+        cursor = 0
+        for idx in range(len(span_ids)):
+            prefix_text = decode(
+                span_ids[: idx + 1],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+            end = min(len(span_text), len(prefix_text))
+            offsets.append((cursor, max(cursor, end)))
+            cursor = max(cursor, end)
+        return offsets
+    return [(0, len(span_text))] * len(span_ids)
+
+
+def _apply_reasoning_loss_mask(
+    labels: list[int],
+    full_ids: list[int],
+    text: str,
+    span_char_start: int,
+    span_char_end: int,
+    tok_start: int,
+    tok_end: int,
+    tokenizer: PreTrainedTokenizerBase,
+    reasoning_loss: str,
+) -> int:
+    """Apply ``reasoning_loss`` policy to ``labels[tok_start:tok_end]``.
+
+    Returns the number of reasoning tokens inside the assistant span.
+    """
+    if reasoning_loss not in VALID_REASONING_LOSS_MODES:
+        raise ValueError(
+            f"reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
+            f"got {reasoning_loss!r}"
+        )
+    rel_spans = [
+        (r_start - span_char_start, r_end - span_char_start)
+        for r_start, r_end in reasoning_char_spans(text, span_char_start, span_char_end)
+    ]
+    if reasoning_loss == "include":
+        if not rel_spans:
+            return 0
+        offsets = _token_char_offsets(
+            text[span_char_start:span_char_end], full_ids[tok_start:tok_end], tokenizer
+        )
+        return sum(
+            1 for a, b in offsets if any(a >= rs and b <= re_ and b > a for rs, re_ in rel_spans)
+        )
+
+    if not rel_spans:
+        if reasoning_loss == "reasoning_only":
+            for j in range(tok_start, tok_end):
+                labels[j] = -100
+        return 0
+
+    span_text = text[span_char_start:span_char_end]
+    offsets = _token_char_offsets(span_text, full_ids[tok_start:tok_end], tokenizer)
+    reasoning_tokens = 0
+    for rel_idx, (tok_a, tok_b) in enumerate(offsets):
+        # A token is inside a reasoning block if its text starts within the
+        # block and does not spill past the closing delimiter into answer text.
+        in_reasoning = any(tok_a >= rs and tok_b <= re_ for rs, re_ in rel_spans)
+        if in_reasoning:
+            reasoning_tokens += 1
+        pos = tok_start + rel_idx
+        if (reasoning_loss == "mask" and in_reasoning) or (
+            reasoning_loss == "reasoning_only" and not in_reasoning
+        ):
+            labels[pos] = -100
+    return reasoning_tokens
+
+
 def build_chat_example(
     sample: dict,
     prompt_spec: dict,
@@ -265,6 +363,7 @@ def build_chat_example(
     request_field: str = "request",
     user_placeholder: str = "<<USER_REQUEST>>",
     return_spans: bool = False,
+    reasoning_loss: str = "include",
 ) -> dict[str, Any]:
     """Tokenize a sample into input_ids + labels.
 
@@ -283,6 +382,11 @@ def build_chat_example(
     ``return_spans`` adds ``spans``: ``(message_index, token_start, token_end)``
     per assistant turn (the dry-run checker reads them).
     """
+    if reasoning_loss not in VALID_REASONING_LOSS_MODES:
+        raise ValueError(
+            f"reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
+            f"got {reasoning_loss!r}"
+        )
     rendered = _messages_from_sample(
         sample,
         prompt_spec,
@@ -305,6 +409,7 @@ def build_chat_example(
     full_ids = _tokenize_text(text, tokenizer) if text else []
     labels: list[int] = [-100] * len(full_ids)
     spans: list[tuple[int, int, int]] = []
+    reasoning_tokens = 0
 
     tool_row = has_tool_features(rendered, tools)
     if tools and text:
@@ -334,6 +439,17 @@ def build_chat_example(
                 rendered[span.message_index],
             )
             labels[start:end] = full_ids[start:end]
+            reasoning_tokens += _apply_reasoning_loss_mask(
+                labels,
+                full_ids,
+                text,
+                span.start,
+                span.end,
+                start,
+                end,
+                tokenizer,
+                reasoning_loss,
+            )
             spans.append((span.message_index, start, end))
     except ChatSpanError as exc:
         if tool_row:
@@ -348,6 +464,20 @@ def build_chat_example(
             tools=tools,
             template_kwargs=template_kwargs,
         )
+        if reasoning_loss != "include" and text:
+            # Apply reasoning span masking across the full rendered text for
+            # non-incremental templates that fell back to prefix lengths.
+            reasoning_tokens = _apply_reasoning_loss_mask(
+                labels,
+                full_ids,
+                text,
+                0,
+                len(text),
+                0,
+                len(full_ids),
+                tokenizer,
+                reasoning_loss,
+            )
 
     if len(full_ids) > max_length:
         raise RowTooLongError(
@@ -357,6 +487,7 @@ def build_chat_example(
     out: dict[str, Any] = {"input_ids": full_ids, "labels": labels, "length": len(full_ids)}
     if return_spans:
         out["spans"] = spans
+        out["reasoning_tokens"] = reasoning_tokens
     return out
 
 
@@ -415,6 +546,7 @@ class SFTDataCollator:
         request_field: str = "request",
         user_placeholder: str = "<<USER_REQUEST>>",
         pretokenized: bool = False,
+        reasoning_loss: str = "include",
     ) -> None:
         self.tokenizer = tokenizer
         self.prompt_spec = prompt_spec
@@ -423,6 +555,7 @@ class SFTDataCollator:
         self.request_field = request_field
         self.user_placeholder = user_placeholder
         self.pretokenized = pretokenized
+        self.reasoning_loss = reasoning_loss
         self.pad_id = (
             tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         )
@@ -440,6 +573,7 @@ class SFTDataCollator:
                     target_field=self.target_field,
                     request_field=self.request_field,
                     user_placeholder=self.user_placeholder,
+                    reasoning_loss=self.reasoning_loss,
                 )
                 for row in batch
             ]
@@ -783,7 +917,8 @@ def train_sft(
                 # Bumped when masking or length handling changes, so a cache built
                 # by the old prefix-length masking or holding left-truncated rows
                 # is never reused.
-                "causal_sft:chat_spans_v3",
+                "causal_sft:chat_spans_v4",
+                cfg.reasoning_loss,
                 target_field,
                 request_field,
                 user_placeholder,
@@ -802,6 +937,7 @@ def train_sft(
                     target_field=target_field,
                     request_field=request_field,
                     user_placeholder=user_placeholder,
+                    reasoning_loss=cfg.reasoning_loss,
                 )
 
             if processor is None:
@@ -817,6 +953,7 @@ def train_sft(
                     request_field=request_field,
                     user_placeholder=user_placeholder,
                     pretokenized=True,
+                    reasoning_loss=cfg.reasoning_loss,
                 )
             else:
                 train_tok, val_tok = train_rows, val_rows

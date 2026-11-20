@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # or a typo trained at a precision nobody asked for.
 VALID_PRECISIONS = ("bf16", "fp16", "fp32")
 VALID_SAVE_STRATEGIES = ("no", "steps", "epoch")
+VALID_REASONING_LOSS_MODES = ("include", "mask", "reasoning_only")
 # Read by the lifecycle after training, not by any trainer.
 LIFECYCLE_TRAINING_KEYS = frozenset({"select_by"})
 
@@ -135,11 +136,26 @@ class SFTTrainConfig(BaseModel):
     frozen_module_prefixes: list[str] = Field(default_factory=list)
     # save_total_limit: how many checkpoint-* dirs survive for select_by to compare.
     keep_checkpoints: int = Field(default=2, ge=1)
+    # Controls whether reasoning spans (<think>, <thought>, <|thought|>,
+    # <|channel>thought) inside assistant turns contribute to SFT loss:
+    # "include" (default), "mask" (answer/tool tokens only), or "reasoning_only".
+    reasoning_loss: str = "include"
 
     @field_validator("precision")
     @classmethod
     def _check_precision(cls, v: str) -> str:
         return validate_precision(v)
+
+    @field_validator("reasoning_loss")
+    @classmethod
+    def _check_reasoning_loss(cls, v: Any) -> str:
+        text = str(v).strip()
+        if text not in VALID_REASONING_LOSS_MODES:
+            raise ValueError(
+                f"training.reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
+                f"got {v!r}"
+            )
+        return text
 
     @field_validator("save_strategy")
     @classmethod
