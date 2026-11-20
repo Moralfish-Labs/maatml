@@ -369,3 +369,78 @@ def test_environment_sha_ignores_an_unrelated_repository(monkeypatch) -> None:
     monkeypatch.setattr(guards.subprocess, "check_output", _fake_check_output)
     assert guards.maatml_checkout_sha() is None
     assert any("--show-toplevel" in c for c in calls)
+
+
+def test_run_options_resume_forces_train_and_passes_resume_arg(
+    tmp_path: Path, fake_steps, monkeypatch
+) -> None:
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    import maatml.lifecycle as lifecycle
+    from maatml.cli import app
+
+    md = _model(tmp_path)
+    assert run_pipeline(md, RunOptions(device="cpu")).ok
+    fake_steps.clear()
+
+    # Without resume, everything is skipped.
+    assert [o.status for o in run_pipeline(md, RunOptions(device="cpu")).outcomes] == [
+        "skipped"
+    ] * len(STEPS)
+
+    # With resume="auto", prepare stays skipped while train + downstream re-run.
+    plans = _plans(md, device="cpu", resume="auto")
+    assert plans["prepare"].fresh is True
+    assert plans["train"].fresh is False and plans["train"].reason == "--resume auto"
+    assert plans["evaluate"].fresh is False
+
+    seen_calls: list[dict[str, object]] = []
+
+    def _resumed_train(model_def, options):
+        seen_calls.append({"resume": options.resume, "progress_file": options.progress_file})
+        return "resumed"
+
+    executors = dict(lifecycle._EXECUTORS)
+    executors["train"] = _resumed_train
+    monkeypatch.setattr(lifecycle, "_EXECUTORS", executors)
+
+    progress_path = tmp_path / "pipeline-progress.json"
+    res = run_pipeline(
+        md,
+        RunOptions(device="cpu", resume="auto", progress_file=progress_path),
+    )
+    assert res.ok
+    assert [o.status for o in res.outcomes] == ["skipped", "ran", "ran", "ran", "ran"]
+    assert seen_calls == [{"resume": "auto", "progress_file": progress_path}]
+    assert _json.loads(progress_path.read_text(encoding="utf-8"))["stage"] == "completed"
+
+    # CLI --resume auto --dry-run surfaces the resume reason.
+    dry = CliRunner().invoke(
+        app, ["run", str(md.model_dir), "--device", "cpu", "--resume", "auto", "--dry-run"]
+    )
+    assert dry.exit_code == 0, dry.output
+    assert "--resume auto" in dry.output
+    assert fake_steps == ["evaluate", "export", "verify"]
+
+
+def test_step_train_forwards_resume_to_registered_trainer(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maatml.lifecycle import _step_train
+    from maatml.registry import TRAINERS
+
+    md = _model(tmp_path)
+    object.__setattr__(md, "architecture", "resume_test_arch")
+    seen: dict[str, object] = {}
+
+    def _trainer(model_def, **kwargs):
+        del model_def
+        seen.update(kwargs)
+        return SimpleNamespace(out_dir=tmp_path / "ckpt", metrics={})
+
+    TRAINERS.register("resume_test_arch", _trainer, source="test")
+    monkeypatch.setattr("maatml.training.selection.select_checkpoint", lambda *a, **kw: None)
+    _step_train(md, RunOptions(device="cpu", resume="auto"))
+    assert seen["resume"] == "auto"

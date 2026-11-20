@@ -21,6 +21,7 @@ request::
     {"op": "candidates", "episode": "e1"}
     {"op": "label", "episode": "e1"}
     {"op": "step", "episode": "e1", "id": "<candidate id>"}
+    {"op": "step_text", "episode": "e1", "text": "<free-text action>", "metadata": {...}}
     {"op": "verify", "episode": "e1"}
     {"op": "close", "episode": "e1"}
 
@@ -33,6 +34,9 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, runtime_checkable
 
 PROTOCOL = "maatml.rollout_env/1"
+
+# Capability name advertised by environments that accept ``step_text``.
+FREE_TEXT_CAPABILITY = "free_text"
 
 # Terminal statuses every environment shares. An environment may add its own.
 SUCCESS = "success"
@@ -70,12 +74,23 @@ class Labels:
 
 @dataclass(frozen=True)
 class StepResult:
-    """The outcome of applying one candidate."""
+    """The outcome of applying one candidate or free-text action."""
 
     observation: dict[str, Any]
     applied: bool
     terminal: Optional[str] = None
     reward: float = 0.0
+    info: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GeneratedAction:
+    """One free-text completion produced by a generative policy."""
+
+    text: str
+    logp: Optional[float] = None
+    token_ids: Optional[tuple[int, ...]] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -109,6 +124,36 @@ class Environment(Protocol):
     def label(self, episode: str) -> Labels: ...
 
     def step(self, episode: str, candidate_id: str) -> StepResult: ...
+
+    def verify(self, episode: str) -> Verification: ...
+
+    def close(self, episode: str) -> None: ...
+
+
+@runtime_checkable
+class FreeTextEnvironment(Protocol):
+    """Protocol extension for environments that accept free-text actions.
+
+    Environments advertising :data:`FREE_TEXT_CAPABILITY` in ``hello()`` accept
+    ``step_text(episode, text, metadata)`` instead of (or in addition to)
+    candidate-ranking ``candidates`` + ``step``. Rewards and terminal
+    verification remain strictly owned by the environment process.
+    """
+
+    def hello(self) -> Hello: ...
+
+    def tasks(self, query: dict[str, Any]) -> list[dict[str, Any]]: ...
+
+    def reset(
+        self, episode: str, task: dict[str, Any], options: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
+    def step_text(
+        self,
+        episode: str,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> StepResult: ...
 
     def verify(self, episode: str) -> Verification: ...
 

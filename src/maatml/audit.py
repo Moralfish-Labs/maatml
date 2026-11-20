@@ -284,6 +284,7 @@ def _model_folder(diag: Diagnostics, model_dir: Path) -> None:
     for key, label in (
         ("seed_samples", "seed corpus"),
         ("benchmark_samples", "benchmark corpus"),
+        ("train_samples", "train-only corpus"),
     ):
         rel = cfg.get(key)
         if not isinstance(rel, str):

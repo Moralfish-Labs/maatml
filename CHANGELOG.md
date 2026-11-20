@@ -8,6 +8,139 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Added
+
+- Core served-model parity predictor (`served_http` / `serve_parity` in
+  `maatml.evaluation.served`) with OpenAI-compatible `/v1/chat/completions`
+  evaluation, export manifest SHA-256 and production gate verification,
+  server `/props` and `/v1/models` identity probing, and structured parity
+  comparison (`compare_parity`).
+- Selective reasoning-span loss masking for causal SFT
+  (`training.reasoning_loss: include | mask | reasoning_only`) handling
+  `<think>`, `<thought>`, `<|thought|>`, and Gemma 4 `<|channel>thought`
+  blocks with token-offset alignment and cache-key isolation.
+- Free-text action extension on the `maatml.rollout_env/1` protocol
+  (`free_text` capability, `step_text` operation over in-process and stdio
+  carriers, `rollout_free_text`, and the `arithmetic_world` reference
+  environment).
+- Verified-output `filtered_imitation` objective
+  (`maatml.training.filtered_imitation`, registered trainer
+  `filtered_imitation`) that filters rollout episodes strictly to
+  environment-verified passing trajectories with split-leakage guards,
+  trace-digest deduplication, optional seed mixing, and SFT handoff.
+- Environment-verified GRPO trainer (`maatml.training.grpo`, registered
+  trainer `grpo`) computing rewards strictly through the rollout environment
+  protocol (`EnvironmentRewardBridge`), anchoring KL divergence to a frozen
+  reference checkpoint, supporting multi-seed runs (`training.seeds`), and
+  enforcing held-out non-regression plus task-completion gain promotion
+  checks (`evaluate_grpo_promotion`), compatible with the `trl>=0.9` floor.
+
+## [0.18.0] - 2026-11-12
+
+### Added
+
+- `training.lora.target_modules` also takes one regular expression, matched
+  against the whole module name, so an adapter can be confined to the language
+  model of a base whose vision and audio towers repeat the projection names. A
+  list keeps its meaning.
+- `maatml export --format adapter` writes `adapters/<name>/` holding exactly
+  `adapter_config.json` and `adapter_model.safetensors`, with `manifest.json`
+  beside the `adapters` folder. `extensions.adapter.spec` names a layout (rank
+  and tensor shapes by name), and the export fails without writing anything
+  unless the adapter matches it. Only safetensors headers are read.
+
+### Changed
+
+- Causal SFT refuses a row that renders to more tokens than
+  `training.max_input_tokens` (`RowTooLongError`) instead of cutting it from the
+  left, which removed the system turn and the tool declarations. The split is
+  tokenized before the first step, so the run aborts before training. Tokenized
+  caches written by earlier versions are not reused.
+
+## [0.17.0] - 2026-11-11
+
+### Added
+
+- Processor-aware SFT trainers: a plugin-owned trainer can call `train_sft`
+  with `data_collator_factory`, which opts into revision-pinned `AutoProcessor`
+  and `AutoModelForImageTextToText` loading. The plugin owns media decoding,
+  loss masks and padding; the shared Trainer keeps optimization, resume,
+  callbacks and run records, and saves processor assets with each checkpoint.
+- `training.frozen_module_prefixes` names submodules that must stay frozen.
+  Trainable parameters or changed tensor bytes there, persistent buffers
+  included, abort the run, and the hashes are recorded in the run metadata.
+- `extensions.gguf.mmproj: true` also exports an f16 multimodal companion
+  (`mmproj-<name>.gguf`) through the explicit converter. It is listed in
+  `manifest.json` and checked by `maatml verify`; a failed or missing
+  companion fails the export.
+
+### Fixed
+
+- `scripts/check_chat_masks.py` takes its tool-call and turn-end tags from the
+  tokenizer's chat template (ChatML or Gemma 4) instead of assuming ChatML, so
+  Gemma 4 tool-call rows are no longer reported as span failures. For an
+  unknown template the two tag checks are skipped with a note.
+
+## [0.16.0] - 2026-11-05
+
+### Added
+
+- `maatml snapshot` waits for a complete policy checkpoint at or after
+  `--min-step` and writes a portable bundle for external backup. It does not
+  stop training, upload data or deserialize optimizer state.
+- `training.checkpoint_snapshots` publishes hash-bound completion evidence
+  beside each saved single-process SFT checkpoint, so a snapshot never captures
+  a checkpoint the trainer is still writing.
+- Predictors may implement `prediction_context(row)` to expose host-side
+  evidence, such as retrieval receipts, separately from generated text.
+  Validators opt in with a named `prediction_context` parameter, and
+  `evaluate --cache` saves the snapshot beside each prediction.
+- The corpus lock records supporting input assets by hash without parsing them
+  as JSONL, so a changed tool schema or prompt changes the lock.
+
+### Changed
+
+- Portable bundles use gzip level 1, which keeps the format and per-file
+  integrity checks while making checkpoint backups fast enough for a billed
+  runtime's shutdown window.
+
+### Fixed
+
+- An interrupted SFT run (`KeyboardInterrupt`) is recorded as aborted instead
+  of being left open.
+- The snapshot CLI help test strips Rich styling, which split option names on
+  CI terminals. Live SFT snapshot tests skip on Windows, where snapshots are
+  refused because they need POSIX writer locks.
+
+## [0.15.0] - 2026-10-29
+
+### Added
+
+- Streaming preparation API (`prepare_stream`) consumes rows incrementally,
+  retaining counters and digests for isolation, attribution and benchmark
+  checks. Refused preparation preserves the previous prepared output.
+- `dataset.train_samples` admits corrective JSONL examples into training
+  after seed splitting, checks held-out group collisions, and records the
+  additional input in the corpus lock.
+- `maatml evaluate --out DIR` writes reports and prediction caches separately
+  from historical evaluation output.
+- `training.disable_tqdm` enables plain SFT Trainer logs for streamed output.
+
+### Fixed
+
+- Strict evaluation rejects mismatched gate populations before loading the
+  predictor. Ship checks reject failed aggregate gate evidence and require
+  matching comparison populations even after replay; configured floors remain
+  bound to `evaluation.gates_benchmark`.
+- Transformers model loading uses `dtype` instead of deprecated `torch_dtype`.
+- Ship-check JSON output avoids Rich wrapping and markup interpretation.
+- Streaming preparation passes Ruff lint, formatting and strict zip checks.
+
+### Documentation
+
+- Refreshed the README with corrective data, cloud training, progress,
+  checkpoint recovery and the limits of validator-based acceptance claims.
+
 ## [0.14.0] - 2026-10-13
 
 ### Changed

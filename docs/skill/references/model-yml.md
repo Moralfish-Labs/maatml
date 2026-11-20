@@ -397,7 +397,29 @@ first.
 `save_mode: adapter` keeps the checkpoint small enough to carry between
 machines; merge locally before exporting GGUF.
 
+`target_modules` is a list or one string. A list names modules by suffix
+(`q_proj`) or in full. A string is a regular expression matched against the
+whole module name. Use the string for a multimodal base: its vision and audio
+towers repeat the projection names, so a suffix list adapts them too, or fails
+on a wrapper PEFT cannot adapt.
+
+```yaml
+training:
+  lora:
+    target_modules: '.*language_model\.layers\.\d+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)'
+```
+
+A row that renders to more tokens than `max_input_tokens` stops the run with
+`RowTooLongError` before the first step. Rows are never truncated: cutting
+from the left removes the system turn and the tool declarations, which is a
+prompt the model is not served. Drop the row or raise the limit.
+
 ## Packaging and extensions
+
+For processor-aware plugin trainers, `training.frozen_module_prefixes` lists
+submodule paths whose parameters and persistent buffers must remain unchanged.
+The shared SFT driver rejects trainable or changed frozen components and records
+their hashes. See the [plugin guide](../../plugins.md#processor-aware-sft-trainers).
 
 ```yaml
 packaging:
@@ -412,6 +434,10 @@ extensions:
     llama_cpp_tag: b9829
     convert_script: null      # or a path; never searched on PATH
     quantize_binary: null
+    mmproj: false            # opt in to a separate f16 multimodal companion
+  adapter:
+    name: my-adapter         # folder under adapters/; defaults to the model name
+    spec: adapter-spec.json  # optional layout the adapter must match
 ```
 
 maatml never searches `PATH` for the llama.cpp convert script or quantize
@@ -419,8 +445,28 @@ binary — that would execute whatever `convert.py` happened to be found first.
 Name them explicitly here or via `MAATML_LLAMA_CONVERT` /
 `MAATML_LLAMA_QUANTIZE`, otherwise `--format gguf` produces no GGUF.
 
+Set `extensions.gguf.mmproj: true` to also invoke the explicit converter with
+`--mmproj --outtype f16`. A failed or missing companion fails the export. The
+`mmproj-<name>.gguf` file is included in `manifest.json` and checked by
+`maatml verify`. Language quantization levels do not quantize the companion.
+The source checkpoint must already contain the modality weights and processor
+assets. Conversion does not establish inference support or answer quality.
+
 Prefer **Q5_K_M over Q4_K_M** for anything citation-shaped: quantization costs
 citation fidelity specifically, and an aggregate pass rate hides it.
+
+`maatml export --format adapter` needs a checkpoint trained with
+`save_mode: adapter` or `both`. It writes `adapters/<name>/` holding exactly
+`adapter_config.json` and `adapter_model.safetensors`, and `manifest.json`
+beside the `adapters` folder, so the adapter folder can be copied as it is
+into a runtime that loads LoRA modules by folder. The export always checks
+that every `lora_A` and `lora_B` tensor has the rank the config states. With
+`extensions.adapter.spec` it also requires the tensor names, shapes and rank of
+that file, `{"rank": 16, "tensors": {"<name>": [dims]}}`, and fails without
+writing anything when they differ. The spec is the layout a serving stack was
+shown to load. Tensors are compared by their safetensors header, so no weights
+are read. Use `--out` to keep the adapter apart from another format's bundle:
+each export writes its own `manifest.json`.
 
 ## Distillation
 

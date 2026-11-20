@@ -117,6 +117,25 @@ class StdioEnvironment:
             applied=bool(reply.get("applied")),
             terminal=reply.get("terminal"),
             reward=float(reply.get("reward") or 0.0),
+            info=dict(reply.get("info") or {}),
+        )
+
+    def step_text(
+        self,
+        episode: str,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> StepResult:
+        fields: dict[str, Any] = {"episode": episode, "text": text}
+        if metadata:
+            fields["metadata"] = dict(metadata)
+        reply = self._call("step_text", **fields)
+        return StepResult(
+            observation=dict(reply.get("observation") or {}),
+            applied=bool(reply.get("applied")),
+            terminal=reply.get("terminal"),
+            reward=float(reply.get("reward") or 0.0),
+            info=dict(reply.get("info") or {}),
         )
 
     def verify(self, episode: str) -> Verification:
@@ -188,13 +207,33 @@ def _dispatch(environment: Any, request: dict[str, Any]) -> dict[str, Any]:
         }
     if op == "step":
         result = environment.step(episode, str(request.get("id") or ""))
-        return {
+        payload: dict[str, Any] = {
             "ok": True,
             "observation": result.observation,
             "applied": result.applied,
             "terminal": result.terminal,
             "reward": result.reward,
         }
+        if result.info:
+            payload["info"] = result.info
+        return payload
+    if op == "step_text":
+        text = request.get("text")
+        if not isinstance(text, str):
+            raise RolloutEnvError("step_text requires string field 'text'")
+        raw_meta = request.get("metadata")
+        metadata = dict(raw_meta) if isinstance(raw_meta, dict) else None
+        result = environment.step_text(episode, text, metadata)
+        payload = {
+            "ok": True,
+            "observation": result.observation,
+            "applied": result.applied,
+            "terminal": result.terminal,
+            "reward": result.reward,
+        }
+        if result.info:
+            payload["info"] = result.info
+        return payload
     if op == "verify":
         verdict = environment.verify(episode)
         return {

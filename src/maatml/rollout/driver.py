@@ -7,6 +7,7 @@ evaluation (no labels, frozen tasks, verified success per family).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -14,7 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Protocol, Sequence
 
-from .protocol import Environment, RolloutEnvError
+from .protocol import (
+    FREE_TEXT_CAPABILITY,
+    Environment,
+    FreeTextEnvironment,
+    GeneratedAction,
+    RolloutEnvError,
+)
 
 EPISODE_KIND = "maatml.rollout_episode/1"
 
@@ -25,6 +32,18 @@ class Policy(Protocol):
     def score(
         self, observation: dict[str, Any], candidates: Sequence[dict[str, Any]]
     ) -> Sequence[float]: ...
+
+
+class FreeTextPolicy(Protocol):
+    """Generates free-text action(s) given an observation."""
+
+    def generate(
+        self,
+        observation: dict[str, Any],
+        *,
+        n: int = 1,
+        seed: Optional[int] = None,
+    ) -> Sequence[GeneratedAction | str]: ...
 
 
 @dataclass
@@ -178,6 +197,131 @@ def rollout(
     for index, task in enumerate(tasks):
         episode_id = f"{config.source}-r{config.round}-{index:06d}"
         yield run_episode(
+            environment,
+            policy,
+            task,
+            episode_id=episode_id,
+            config=config,
+            rng=rng,
+            identity=identity,
+        )
+
+
+def trace_digest(actions: Sequence[str]) -> str:
+    """Deterministic SHA-256 digest of a sequence of chosen actions."""
+    encoded = json.dumps(list(actions), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _coerce_generated_action(raw: GeneratedAction | str) -> GeneratedAction:
+    if isinstance(raw, GeneratedAction):
+        return raw
+    if isinstance(raw, str):
+        return GeneratedAction(text=raw)
+    raise RolloutEnvError(f"free-text policy returned unsupported action type {type(raw).__name__}")
+
+
+def run_free_text_episode(
+    environment: FreeTextEnvironment,
+    policy: FreeTextPolicy,
+    task: dict[str, Any],
+    *,
+    episode_id: str,
+    config: RolloutConfig,
+    rng: random.Random,
+    identity: dict[str, str],
+) -> dict[str, Any]:
+    """One free-text episode from ``reset`` to the environment's verdict.
+
+    Every reward and terminal verification comes strictly from ``environment``
+    via ``step_text`` and ``verify``; the driver never scores model text.
+    """
+    observation = environment.reset(episode_id, task, config.options)
+    decisions: list[dict[str, Any]] = []
+    chosen_actions: list[str] = []
+    truncated: Optional[str] = None
+    try:
+        while True:
+            if len(decisions) >= config.max_decisions:
+                truncated = "max_decisions"
+                break
+            step_seed = rng.randint(0, 2**31 - 1)
+            generated = list(policy.generate(observation, n=1, seed=step_seed))
+            if not generated:
+                truncated = "no_action"
+                break
+            action = _coerce_generated_action(generated[0])
+            result = environment.step_text(
+                episode_id,
+                action.text,
+                metadata=action.metadata or None,
+            )
+            chosen_actions.append(action.text)
+            decisions.append(
+                {
+                    "observation": observation,
+                    "chosen": action.text,
+                    "text": action.text,
+                    "actor": "policy",
+                    "logp": action.logp,
+                    "token_ids": list(action.token_ids) if action.token_ids is not None else None,
+                    "metadata": dict(action.metadata),
+                    "teacher_valid": None,
+                    "applied": result.applied,
+                    "reward": result.reward,
+                    "info": dict(result.info),
+                }
+            )
+            observation = result.observation
+            if result.terminal is not None:
+                break
+        verdict = environment.verify(episode_id)
+    finally:
+        environment.close(episode_id)
+    return {
+        "kind": EPISODE_KIND,
+        "action_mode": FREE_TEXT_CAPABILITY,
+        "episode_id": episode_id,
+        "task_id": str(task.get("id") or ""),
+        "task_family": str(task.get("family") or "unknown"),
+        "split": str(task.get("split") or ""),
+        "task": task,
+        "source": config.source,
+        "policy_version": config.policy_version,
+        "round": config.round,
+        "environment": identity,
+        "trace_digest": trace_digest(chosen_actions),
+        "decisions": decisions,
+        "outcome": {
+            "status": verdict.status,
+            "success": verdict.success,
+            "reward": verdict.reward,
+            "decisions": len(decisions),
+            "truncated": truncated,
+            "detail": verdict.detail,
+        },
+    }
+
+
+def rollout_free_text(
+    environment: FreeTextEnvironment,
+    policy: FreeTextPolicy,
+    tasks: Iterable[dict[str, Any]],
+    *,
+    config: Optional[RolloutConfig] = None,
+) -> Iterator[dict[str, Any]]:
+    """Free-text episodes for ``tasks``, one at a time, in task order."""
+    config = config or RolloutConfig()
+    hello = environment.hello()
+    if not hello.supports(FREE_TEXT_CAPABILITY):
+        raise RolloutEnvError(
+            f"environment {hello.name!r} does not advertise {FREE_TEXT_CAPABILITY!r} capability"
+        )
+    identity = {"name": hello.name, "version": hello.version, "protocol": hello.protocol}
+    rng = random.Random(config.seed)
+    for index, task in enumerate(tasks):
+        episode_id = f"{config.source}-r{config.round}-{index:06d}"
+        yield run_free_text_episode(
             environment,
             policy,
             task,

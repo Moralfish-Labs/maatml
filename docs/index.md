@@ -56,7 +56,7 @@ Canonical references in the repo:
 | `maatml evaluate` | Validator + metrics + eval gates (`--gate` fails CI; `--cache`, `--blind`) |
 | `maatml gates derive` / `ship-check` / `operating-point derive` | Floors from reports, the release verdict, the val-derived threshold ([evidence](evidence.md)) |
 | `maatml runs` / `report` | The run registry (`--pack` / `--adopt` to move a run); the evidence document from the records alone |
-| `maatml export` | Bundle checkpoint (safetensors / gguf / mlx / onnx) + `manifest.json` |
+| `maatml export` | Bundle checkpoint (safetensors / gguf / mlx / adapter / onnx) + `manifest.json` |
 | `maatml compile` / `manifest amend` | Target compilation and checksummed additions to an export |
 | `maatml verify` | Recompute sha256 of manifest files |
 | `maatml serve` | JSON inference API, validator inline (`/predict?validate=1`) |
@@ -69,8 +69,10 @@ validators, and metrics.
 
 ## Release boundary
 
-These docs describe **0.14.0**, including rollouts, train-only rows, tool-call
-chat training and corrected multi-turn masking. Upgrade older installations
+These docs describe **0.18.0**, including spec-checked adapter export,
+regular-expression LoRA targets, processor-aware SFT trainers,
+multimodal GGUF companions, checkpoint snapshots, per-prediction evidence, streaming preparation, corrective train-only inputs, population
+safeguards, rollouts and tool-call chat training. Upgrade older installations
 to use these features. The repository changelog distinguishes shipped releases
 from future Unreleased work.
 Model recipes and task plugins remain independent of the framework, while

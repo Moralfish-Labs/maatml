@@ -31,8 +31,11 @@ does not belong in them.
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
 
-Current package version: **0.14.0**. Rollouts, train-only rows and tool-call
-chat training are released. Historical tranches below describe completed work;
+Current package version: **0.18.0**. Regular-expression LoRA targets,
+spec-checked adapter export, processor-aware SFT trainers,
+frozen-component checks, multimodal GGUF companions, checkpoint snapshots,
+per-prediction evidence, streaming preparation, corrective training inputs, population
+safeguards, rollouts and tool-call chat training are released. Historical tranches below describe completed work;
 they are not the current task queue.
 
 | Tranche | Theme | Status |

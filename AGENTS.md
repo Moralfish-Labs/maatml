@@ -41,7 +41,7 @@ mypy src/maatml --ignore-missing-imports
 .venv/bin/maatml train    examples/<name>/ [--smoke] [--device mps|cpu|cuda] [--seed N] [--limit N] [--resume auto|PATH] [--set training.learning_rate=1e-4]
 .venv/bin/maatml sweep    examples/<name>/ --param training.learning_rate=1e-4,3e-4 --param training.lora.r=8,16 [--metric eval_loss] [--smoke] [--max-trials N]
 .venv/bin/maatml evaluate examples/<name>/ [--checkpoint X] [--split test|val] [--gate]
-.venv/bin/maatml export   examples/<name>/ [--checkpoint X] [--format safetensors|gguf|mlx|onnx] [--out PATH] [--parity]
+.venv/bin/maatml export   examples/<name>/ [--checkpoint X] [--format safetensors|gguf|mlx|adapter|onnx] [--out PATH] [--parity]
 .venv/bin/maatml compile  <export-dir> --target NAME --out DIR [--option K=V] [--require-gated]
 .venv/bin/maatml verify   examples/<name>/output/export/<run_id>
 .venv/bin/maatml serve    examples/<name>/ [--server http|NAME] [--server-option K=V] [--enforce] [--max-retries N] [--auth-token T] [--capture PATH]
@@ -106,7 +106,7 @@ architecture → trainer registry (causal_sft / seq2seq / multi_head_classifier 
 dataset.format → format registry (jsonl_seed / alpaca / sharegpt / preference_jsonl → prepare)
 dataset.generator → generator registry (synthetic_scenes / described_scenes / custom → datagen)
 evaluation.validator / metrics / predictor → plugin registries
-export --format → exporter registry (safetensors / gguf / mlx / onnx)
+export --format → exporter registry (safetensors / gguf / mlx / adapter / onnx)
 compile --target → compiler registry (device-specific plans / packages)
 serve --server → server registry (http default; DeepStream / vLLM / … plugins)
 ```

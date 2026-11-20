@@ -19,7 +19,7 @@ TrainingArguments outer loop.
 
 Public surface:
 
-  - `LoraSettings`, `SFTTrainConfig`, `SFTTrainResult`
+  - `LoraSettings`, `SFTTrainConfig`, `SFTTrainResult`, `RowTooLongError`
   - `_resolve_device`, `_maybe_attach_lora`
   - `render_assistant_target(sample, target_field) -> str`
   - `render_inference_prompt(request, prompt_spec, tokenizer, *, user_placeholder) -> list[int]`
@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Optional, Type
+from typing import Any, Callable, Optional, Type
 
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
@@ -55,14 +55,17 @@ from ..device import (
     effective_dataloader_workers,
     resolve_training_placement,
 )
+from ..progress import JobProgressReporter, make_progress_callback, resolve_progress_file
 from ..runs import begin_training_run, finish_run, normalize_report_to
 from ..utils.chat import (
+    VALID_REASONING_LOSS_MODES,
     ChatSpanError,
     assistant_char_spans,
     chat_template_options,
     expected_fragments,
     has_tool_features,
     normalize_messages,
+    reasoning_char_spans,
     render_chat,
 )
 from ..utils.io import iter_jsonl, read_json, sha256_file, stable_hash
@@ -83,8 +86,13 @@ from .sft_config import (  # noqa: F401  re-export public config surface
     SFTTrainResult,
     render_assistant_target,
 )
+from .signals import TrainingInterrupted, TrainingStopController, make_signal_stop_callback
 
 console = Console()
+
+
+class RowTooLongError(ValueError):
+    """A row renders to more tokens than ``training.max_input_tokens``."""
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +257,102 @@ def _verify_span(
             raise ChatSpanError(f"the supervised span is missing {fragment[:60]!r}")
 
 
+def _token_char_offsets(
+    span_text: str,
+    span_ids: list[int],
+    tokenizer: PreTrainedTokenizerBase,
+) -> list[tuple[int, int]]:
+    """Map each token in ``span_ids`` to its ``(start, end)`` char range inside
+    ``span_text``. Prefers fast tokenizer offset mappings when available and
+    exact, falling back to deterministic prefix-decode offsets."""
+    try:
+        encoded = tokenizer(
+            span_text,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+            return_tensors=None,
+        )
+        mapping = encoded.get("offset_mapping") if hasattr(encoded, "get") else None
+        ids = _flatten_token_list(encoded)
+        if mapping and ids == span_ids and len(mapping) == len(span_ids):
+            return [(int(a), int(b)) for a, b in mapping]
+    except (TypeError, ValueError, NotImplementedError, KeyError):
+        pass
+
+    decode = getattr(tokenizer, "decode", None)
+    if callable(decode):
+        offsets: list[tuple[int, int]] = []
+        cursor = 0
+        for idx in range(len(span_ids)):
+            prefix_text = decode(
+                span_ids[: idx + 1],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+            end = min(len(span_text), len(prefix_text))
+            offsets.append((cursor, max(cursor, end)))
+            cursor = max(cursor, end)
+        return offsets
+    return [(0, len(span_text))] * len(span_ids)
+
+
+def _apply_reasoning_loss_mask(
+    labels: list[int],
+    full_ids: list[int],
+    text: str,
+    span_char_start: int,
+    span_char_end: int,
+    tok_start: int,
+    tok_end: int,
+    tokenizer: PreTrainedTokenizerBase,
+    reasoning_loss: str,
+) -> int:
+    """Apply ``reasoning_loss`` policy to ``labels[tok_start:tok_end]``.
+
+    Returns the number of reasoning tokens inside the assistant span.
+    """
+    if reasoning_loss not in VALID_REASONING_LOSS_MODES:
+        raise ValueError(
+            f"reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
+            f"got {reasoning_loss!r}"
+        )
+    rel_spans = [
+        (r_start - span_char_start, r_end - span_char_start)
+        for r_start, r_end in reasoning_char_spans(text, span_char_start, span_char_end)
+    ]
+    if reasoning_loss == "include":
+        if not rel_spans:
+            return 0
+        offsets = _token_char_offsets(
+            text[span_char_start:span_char_end], full_ids[tok_start:tok_end], tokenizer
+        )
+        return sum(
+            1 for a, b in offsets if any(a >= rs and b <= re_ and b > a for rs, re_ in rel_spans)
+        )
+
+    if not rel_spans:
+        if reasoning_loss == "reasoning_only":
+            for j in range(tok_start, tok_end):
+                labels[j] = -100
+        return 0
+
+    span_text = text[span_char_start:span_char_end]
+    offsets = _token_char_offsets(span_text, full_ids[tok_start:tok_end], tokenizer)
+    reasoning_tokens = 0
+    for rel_idx, (tok_a, tok_b) in enumerate(offsets):
+        # A token is inside a reasoning block if its text starts within the
+        # block and does not spill past the closing delimiter into answer text.
+        in_reasoning = any(tok_a >= rs and tok_b <= re_ for rs, re_ in rel_spans)
+        if in_reasoning:
+            reasoning_tokens += 1
+        pos = tok_start + rel_idx
+        if (reasoning_loss == "mask" and in_reasoning) or (
+            reasoning_loss == "reasoning_only" and not in_reasoning
+        ):
+            labels[pos] = -100
+    return reasoning_tokens
+
+
 def build_chat_example(
     sample: dict,
     prompt_spec: dict,
@@ -259,6 +363,7 @@ def build_chat_example(
     request_field: str = "request",
     user_placeholder: str = "<<USER_REQUEST>>",
     return_spans: bool = False,
+    reasoning_loss: str = "include",
 ) -> dict[str, Any]:
     """Tokenize a sample into input_ids + labels.
 
@@ -270,9 +375,18 @@ def build_chat_example(
     by decoding it back. A tool row whose spans cannot be located exactly
     raises :class:`ChatSpanError` rather than training on shifted labels.
 
+    A row longer than ``max_length`` raises :class:`RowTooLongError`. It is
+    never truncated: cutting from the left removes the system turn and the
+    tool declarations, a prompt the model is not served.
+
     ``return_spans`` adds ``spans``: ``(message_index, token_start, token_end)``
-    per assistant turn, before truncation (the dry-run checker reads them).
+    per assistant turn (the dry-run checker reads them).
     """
+    if reasoning_loss not in VALID_REASONING_LOSS_MODES:
+        raise ValueError(
+            f"reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
+            f"got {reasoning_loss!r}"
+        )
     rendered = _messages_from_sample(
         sample,
         prompt_spec,
@@ -295,6 +409,7 @@ def build_chat_example(
     full_ids = _tokenize_text(text, tokenizer) if text else []
     labels: list[int] = [-100] * len(full_ids)
     spans: list[tuple[int, int, int]] = []
+    reasoning_tokens = 0
 
     tool_row = has_tool_features(rendered, tools)
     if tools and text:
@@ -324,6 +439,17 @@ def build_chat_example(
                 rendered[span.message_index],
             )
             labels[start:end] = full_ids[start:end]
+            reasoning_tokens += _apply_reasoning_loss_mask(
+                labels,
+                full_ids,
+                text,
+                span.start,
+                span.end,
+                start,
+                end,
+                tokenizer,
+                reasoning_loss,
+            )
             spans.append((span.message_index, start, end))
     except ChatSpanError as exc:
         if tool_row:
@@ -338,13 +464,30 @@ def build_chat_example(
             tools=tools,
             template_kwargs=template_kwargs,
         )
+        if reasoning_loss != "include" and text:
+            # Apply reasoning span masking across the full rendered text for
+            # non-incremental templates that fell back to prefix lengths.
+            reasoning_tokens = _apply_reasoning_loss_mask(
+                labels,
+                full_ids,
+                text,
+                0,
+                len(text),
+                0,
+                len(full_ids),
+                tokenizer,
+                reasoning_loss,
+            )
 
     if len(full_ids) > max_length:
-        full_ids = full_ids[-max_length:]
-        labels = labels[-max_length:]
+        raise RowTooLongError(
+            f"row {sample.get('sample_id')}: {len(full_ids)} tokens exceed "
+            f"max_input_tokens={max_length}; drop the row or raise the limit"
+        )
     out: dict[str, Any] = {"input_ids": full_ids, "labels": labels, "length": len(full_ids)}
     if return_spans:
         out["spans"] = spans
+        out["reasoning_tokens"] = reasoning_tokens
     return out
 
 
@@ -403,6 +546,7 @@ class SFTDataCollator:
         request_field: str = "request",
         user_placeholder: str = "<<USER_REQUEST>>",
         pretokenized: bool = False,
+        reasoning_loss: str = "include",
     ) -> None:
         self.tokenizer = tokenizer
         self.prompt_spec = prompt_spec
@@ -411,6 +555,7 @@ class SFTDataCollator:
         self.request_field = request_field
         self.user_placeholder = user_placeholder
         self.pretokenized = pretokenized
+        self.reasoning_loss = reasoning_loss
         self.pad_id = (
             tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         )
@@ -428,6 +573,7 @@ class SFTDataCollator:
                     target_field=self.target_field,
                     request_field=self.request_field,
                     user_placeholder=self.user_placeholder,
+                    reasoning_loss=self.reasoning_loss,
                 )
                 for row in batch
             ]
@@ -477,6 +623,36 @@ def _load_or_build_tokenized_cache(
     return tokenized
 
 
+def _is_quantized_model(model: Any) -> bool:
+    for candidate in (
+        model,
+        getattr(model, "base_model", None),
+        getattr(getattr(model, "base_model", None), "model", None),
+    ):
+        if candidate is None:
+            continue
+        if getattr(candidate, "is_loaded_in_4bit", False) or getattr(
+            candidate, "is_loaded_in_8bit", False
+        ):
+            return True
+    cfg = getattr(model, "config", None)
+    return getattr(cfg, "quantization_config", None) is not None
+
+
+def _refuse_quantized_merge(
+    save_mode: Optional[str],
+    *,
+    lora_enabled: bool,
+    quantized: bool,
+) -> None:
+    mode = (save_mode or "merged").lower()
+    if lora_enabled and quantized and mode in ("merged", "both"):
+        raise ValueError(
+            "Cannot merge LoRA weights into a quantized (4-bit/8-bit) base model; "
+            "set training.lora.save_mode to 'adapter'"
+        )
+
+
 def _save_sft_artifacts(
     model,
     tokenizer,
@@ -485,6 +661,7 @@ def _save_sft_artifacts(
     save_mode: str,
     base_model_id: str,
     spec_path: Optional[Path] = None,
+    quantized: bool = False,
 ) -> dict[str, Any]:
     """Persist merged and/or adapter weights per ``lora.save_mode``.
 
@@ -496,6 +673,11 @@ def _save_sft_artifacts(
         raise ValueError(f"training.lora.save_mode must be merged|adapter|both; got {save_mode!r}")
     meta: dict[str, Any] = {"lora_save_mode": mode, "base_model_id": base_model_id}
     is_peft = hasattr(model, "merge_and_unload") and hasattr(model, "save_pretrained")
+    _refuse_quantized_merge(
+        mode,
+        lora_enabled=is_peft,
+        quantized=quantized or _is_quantized_model(model),
+    )
 
     if mode in ("adapter", "both") and is_peft:
         adapter_dir = out_dir / "adapter" if mode == "both" else out_dir
@@ -573,6 +755,8 @@ def train_sft(
     resume: Optional[str] = None,
     trial: Optional[dict[str, Any]] = None,
     log_label: str = "SFT",
+    data_collator_factory: Optional[Callable[..., Any]] = None,
+    progress_file: Optional[str | Path] = None,
 ) -> SFTTrainResult:
     """The shared SFT training driver. Each task module is a thin wrapper
     that pins `target_field`, `request_field`, and `default_prompt_spec`.
@@ -615,7 +799,19 @@ def train_sft(
     prompt_spec = read_json(spec_path)
 
     dataset_dir = Path(dataset_dir) if dataset_dir else model_def.prepared_dir
+    quant = cfg.quantization if cfg.quantization and cfg.quantization.enabled() else None
+    _refuse_quantized_merge(
+        cfg.lora.save_mode,
+        lora_enabled=cfg.lora.enabled,
+        quantized=quant is not None,
+    )
     target_device, profile, distributed = resolve_training_placement(device)
+    if cfg.checkpoint_snapshots and distributed:
+        raise ValueError("SFT checkpoint snapshots currently require a single process")
+    if cfg.checkpoint_snapshots and (cfg.save_strategy == "no" or cfg.save_only_model):
+        raise ValueError(
+            "SFT checkpoint snapshots require save_strategy != 'no' and save_only_model=False"
+        )
 
     run, out_dir, resume_path = begin_training_run(
         model_def,
@@ -626,221 +822,290 @@ def train_sft(
         resume=resume,
         trial=trial,
     )
+    reporter = JobProgressReporter(
+        resolve_progress_file(progress_file),
+        run_id=run.run_id,
+        artifact_uri=str(out_dir),
+    )
+    stop_controller = TrainingStopController()
 
     # The run record exists from here on: reading the splits is fallible too,
-    # so it belongs inside the handler that marks the run `aborted`.
+    # so it belongs inside the handler that marks the run `aborted` or `interrupted`.
     try:
-        train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
-        val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
-        if limit is not None:
-            train_rows = train_rows[:limit]
-            val_rows = val_rows[: max(2, limit // 4)]
-        if not train_rows:
-            raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
+        with stop_controller.installed():
+            reporter.update(stage="train")
+            train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
+            val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
+            if limit is not None:
+                train_rows = train_rows[:limit]
+                val_rows = val_rows[: max(2, limit // 4)]
+            if not train_rows:
+                raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
 
-        console.print(
-            f"[cyan]{log_label} train[/]: run={run.run_id} model={cfg.model_id} "
-            f"train={len(train_rows)} val={len(val_rows)} lora={cfg.lora.enabled} "
-            f"precision={cfg.precision}"
-            + (f" quant={cfg.quantization.enabled()}" if cfg.quantization else "")
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        use_bf16, use_fp16 = precision_flags(
-            cfg.precision, device=target_device, distributed=distributed
-        )
-        quant = cfg.quantization if cfg.quantization and cfg.quantization.enabled() else None
-        load_kwargs = from_pretrained_kwargs(
-            profile,
-            precision=cfg.precision,
-            attn_implementation=cfg.attn_implementation,
-            quantization=quant,
-            revision=cfg.model_revision,
-            # A LoRA never updates the base, so it does not need fp32 master
-            # weights. On MPS carrying them anyway is the difference between
-            # fitting in unified memory and swapping.
-            frozen_base=bool(cfg.lora and cfg.lora.enabled),
-        )
-        model = AutoModelForCausalLM.from_pretrained(cfg.model_id, **load_kwargs)
-        model = maybe_prepare_kbit(model, quant)
-        ensure_tokenizer_model_contract(
-            model,
-            tokenizer,
-            embedding_strategy=embedding_strategy,
-        )
-        model.config.pad_token_id = tokenizer.pad_token_id
-        model.config.bos_token_id = tokenizer.bos_token_id
-        model.config.eos_token_id = tokenizer.eos_token_id
-        if hasattr(model, "generation_config") and model.generation_config is not None:
-            model.generation_config.pad_token_id = tokenizer.pad_token_id
-            model.generation_config.bos_token_id = tokenizer.bos_token_id
-            model.generation_config.eos_token_id = tokenizer.eos_token_id
-        model = _maybe_attach_lora(model, cfg.lora)
-
-        train_file = dataset_dir / "train.jsonl"
-        val_file = dataset_dir / "val.jsonl"
-        prompt_hash = sha256_file(spec_path) if spec_path.is_file() else stable_hash(prompt_spec)
-        cache_key = stable_hash(
-            _tokenizer_cache_identity(tokenizer),
-            cfg.max_input_tokens,
-            prompt_hash,
-            sha256_file(train_file) if train_file.is_file() else "",
-            # val.jsonl content too: re-preparing with the same train split but
-            # a different val split used to reuse a stale val cache.
-            sha256_file(val_file) if val_file.is_file() else "",
-            # Bumped when masking changes, so caches built by the old
-            # prefix-length masking are never reused.
-            "causal_sft:chat_spans_v2",
-            target_field,
-            request_field,
-            user_placeholder,
-            limit,
-        )
-        cache_dir = model_def.output_dir / "cache"
-        train_cache = cache_dir / f"sft_train_{cache_key[:16]}.pt"
-        val_cache = cache_dir / f"sft_val_{cache_key[:16]}.pt"
-
-        def _tok(row: dict) -> dict:
-            return build_chat_example(
-                row,
-                prompt_spec,
-                tokenizer,
-                max_length=cfg.max_input_tokens,
-                target_field=target_field,
-                request_field=request_field,
-                user_placeholder=user_placeholder,
+            console.print(
+                f"[cyan]{log_label} train[/]: run={run.run_id} model={cfg.model_id} "
+                f"train={len(train_rows)} val={len(val_rows)} lora={cfg.lora.enabled} "
+                f"precision={cfg.precision}"
+                + (f" quant={cfg.quantization.enabled()}" if cfg.quantization else "")
             )
 
-        train_tok = _load_or_build_tokenized_cache(train_rows, train_cache, _tok)
-        val_tok = _load_or_build_tokenized_cache(val_rows, val_cache, _tok) if val_rows else []
+            processor = None
+            if data_collator_factory is not None:
+                from transformers import AutoProcessor
 
-        collator = SFTDataCollator(
-            tokenizer,
-            prompt_spec,
-            max_length=cfg.max_input_tokens,
-            target_field=target_field,
-            request_field=request_field,
-            user_placeholder=user_placeholder,
-            pretokenized=True,
-        )
-        train_ds = _ListDataset(train_tok)
-        val_ds = _ListDataset(val_tok) if val_tok else None
+                processor = AutoProcessor.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+                tokenizer = processor.tokenizer
+                collator = data_collator_factory(model_def, processor, cfg)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
 
-        total_steps = total_training_steps(
-            len(train_rows),
-            batch_size=cfg.batch_size,
-            grad_accum=cfg.grad_accum,
-            epochs=cfg.epochs,
-            max_steps=cfg.max_steps,
-        )
-        use_grad_ckpt = bool(cfg.grad_checkpointing) and profile.allow_grad_checkpointing
-        run_eval_during_training = (
-            val_ds is not None and profile.allow_mid_train_eval and cfg.eval_steps < total_steps
-        )
-        warmup_steps = resolve_warmup_steps(total_steps, cfg.warmup_ratio)
-        report_to = normalize_report_to(cfg.report_to)
-        num_workers = effective_dataloader_workers(profile, cfg.dataloader_workers)
+            use_bf16, use_fp16 = precision_flags(
+                cfg.precision, device=target_device, distributed=distributed
+            )
+            load_kwargs = from_pretrained_kwargs(
+                profile,
+                precision=cfg.precision,
+                attn_implementation=cfg.attn_implementation,
+                quantization=quant,
+                revision=cfg.model_revision,
+                # A LoRA never updates the base, so it does not need fp32 master
+                # weights. On MPS carrying them anyway is the difference between
+                # fitting in unified memory and swapping.
+                frozen_base=bool(cfg.lora and cfg.lora.enabled),
+                distributed=distributed,
+            )
+            model_class: Any = AutoModelForCausalLM
+            if processor is not None:
+                from transformers import AutoModelForImageTextToText
 
-        args_kwargs: dict = {
-            "output_dir": str(out_dir),
-            "run_name": run.run_id,
-            "per_device_train_batch_size": cfg.batch_size,
-            "per_device_eval_batch_size": cfg.batch_size,
-            "gradient_accumulation_steps": cfg.grad_accum,
-            "learning_rate": cfg.learning_rate,
-            "num_train_epochs": cfg.epochs,
-            "weight_decay": cfg.weight_decay,
-            "warmup_steps": warmup_steps,
-            "logging_steps": cfg.logging_steps,
-            "eval_strategy": "steps" if run_eval_during_training else "no",
-            "eval_steps": cfg.eval_steps if run_eval_during_training else None,
-            "save_strategy": "steps",
-            "save_steps": cfg.save_steps,
-            "save_total_limit": cfg.keep_checkpoints,
-            "seed": cfg.seed,
-            "bf16": use_bf16,
-            "fp16": use_fp16,
-            "gradient_checkpointing": use_grad_ckpt,
-            "dataloader_num_workers": num_workers,
-            "report_to": report_to,
-            "optim": "adamw_torch",
-            "max_steps": cfg.max_steps,
-            # Distributed: let HF Trainer / accelerate place the model.
-            "use_cpu": (not distributed) and target_device.type == "cpu",
-            "remove_unused_columns": False,
-            "length_column_name": "length",
-        }
-        # transformers≥5 dropped group_by_length from TrainingArguments.
-        import inspect
+                model_class = AutoModelForImageTextToText
+            model = model_class.from_pretrained(cfg.model_id, **load_kwargs)
+            model = maybe_prepare_kbit(model, quant)
+            ensure_tokenizer_model_contract(
+                model,
+                tokenizer,
+                embedding_strategy=embedding_strategy,
+            )
+            model.config.pad_token_id = tokenizer.pad_token_id
+            model.config.bos_token_id = tokenizer.bos_token_id
+            model.config.eos_token_id = tokenizer.eos_token_id
+            if hasattr(model, "generation_config") and model.generation_config is not None:
+                model.generation_config.pad_token_id = tokenizer.pad_token_id
+                model.generation_config.bos_token_id = tokenizer.bos_token_id
+                model.generation_config.eos_token_id = tokenizer.eos_token_id
+            from .frozen import FrozenComponents, make_frozen_guard_callback
 
-        if "group_by_length" in inspect.signature(TrainingArguments.__init__).parameters:
-            args_kwargs["group_by_length"] = bool(cfg.group_by_length)
-        args = TrainingArguments(**args_kwargs)
+            frozen = FrozenComponents(model, cfg.frozen_module_prefixes)
+            model = _maybe_attach_lora(model, cfg.lora)
+            frozen.verify()
 
-        trainer = Trainer(
-            model=model,
-            args=args,
-            train_dataset=train_ds,
-            eval_dataset=val_ds if run_eval_during_training else None,
-            data_collator=collator,
-            processing_class=tokenizer,
-            callbacks=[
+            train_file = dataset_dir / "train.jsonl"
+            val_file = dataset_dir / "val.jsonl"
+            prompt_hash = (
+                sha256_file(spec_path) if spec_path.is_file() else stable_hash(prompt_spec)
+            )
+            cache_key = stable_hash(
+                _tokenizer_cache_identity(tokenizer),
+                cfg.max_input_tokens,
+                prompt_hash,
+                sha256_file(train_file) if train_file.is_file() else "",
+                # val.jsonl content too: re-preparing with the same train split but
+                # a different val split used to reuse a stale val cache.
+                sha256_file(val_file) if val_file.is_file() else "",
+                # Bumped when masking or length handling changes, so a cache built
+                # by the old prefix-length masking or holding left-truncated rows
+                # is never reused.
+                "causal_sft:chat_spans_v4",
+                cfg.reasoning_loss,
+                target_field,
+                request_field,
+                user_placeholder,
+                limit,
+            )
+            cache_dir = model_def.output_dir / "cache"
+            train_cache = cache_dir / f"sft_train_{cache_key[:16]}.pt"
+            val_cache = cache_dir / f"sft_val_{cache_key[:16]}.pt"
+
+            def _tok(row: dict) -> dict:
+                return build_chat_example(
+                    row,
+                    prompt_spec,
+                    tokenizer,
+                    max_length=cfg.max_input_tokens,
+                    target_field=target_field,
+                    request_field=request_field,
+                    user_placeholder=user_placeholder,
+                    reasoning_loss=cfg.reasoning_loss,
+                )
+
+            if processor is None:
+                train_tok = _load_or_build_tokenized_cache(train_rows, train_cache, _tok)
+                val_tok = (
+                    _load_or_build_tokenized_cache(val_rows, val_cache, _tok) if val_rows else []
+                )
+                collator = SFTDataCollator(
+                    tokenizer,
+                    prompt_spec,
+                    max_length=cfg.max_input_tokens,
+                    target_field=target_field,
+                    request_field=request_field,
+                    user_placeholder=user_placeholder,
+                    pretokenized=True,
+                    reasoning_loss=cfg.reasoning_loss,
+                )
+            else:
+                train_tok, val_tok = train_rows, val_rows
+            train_ds = _ListDataset(train_tok)
+            val_ds = _ListDataset(val_tok) if val_tok else None
+
+            total_steps = total_training_steps(
+                len(train_rows),
+                batch_size=cfg.batch_size,
+                grad_accum=cfg.grad_accum,
+                epochs=cfg.epochs,
+                max_steps=cfg.max_steps,
+            )
+            use_grad_ckpt = bool(cfg.grad_checkpointing) and profile.allow_grad_checkpointing
+            run_eval_during_training = (
+                val_ds is not None and profile.allow_mid_train_eval and cfg.eval_steps < total_steps
+            )
+            warmup_steps = resolve_warmup_steps(total_steps, cfg.warmup_ratio)
+            report_to = normalize_report_to(cfg.report_to)
+            num_workers = effective_dataloader_workers(profile, cfg.dataloader_workers)
+
+            args_kwargs: dict = {
+                "output_dir": str(out_dir),
+                "run_name": run.run_id,
+                "per_device_train_batch_size": cfg.batch_size,
+                "per_device_eval_batch_size": cfg.batch_size,
+                "gradient_accumulation_steps": cfg.grad_accum,
+                "learning_rate": cfg.learning_rate,
+                "num_train_epochs": cfg.epochs,
+                "weight_decay": cfg.weight_decay,
+                "warmup_steps": warmup_steps,
+                "logging_steps": cfg.logging_steps,
+                "disable_tqdm": cfg.disable_tqdm,
+                "eval_strategy": "steps" if run_eval_during_training else "no",
+                "eval_steps": cfg.eval_steps if run_eval_during_training else None,
+                "save_strategy": cfg.save_strategy,
+                "save_steps": cfg.save_steps,
+                "save_total_limit": cfg.keep_checkpoints,
+                "save_only_model": cfg.save_only_model,
+                "seed": cfg.seed,
+                "bf16": use_bf16,
+                "fp16": use_fp16,
+                "gradient_checkpointing": use_grad_ckpt,
+                "dataloader_num_workers": num_workers,
+                "report_to": report_to,
+                "optim": cfg.optim,
+                "lr_scheduler_type": cfg.lr_scheduler_type,
+                "max_grad_norm": cfg.max_grad_norm,
+                "max_steps": cfg.max_steps,
+                # Distributed: let HF Trainer / accelerate place the model.
+                "use_cpu": (not distributed) and target_device.type == "cpu",
+                "remove_unused_columns": False,
+                "length_column_name": "length",
+            }
+            if cfg.lr_scheduler_kwargs is not None:
+                args_kwargs["lr_scheduler_kwargs"] = cfg.lr_scheduler_kwargs
+            # transformers≥5 dropped group_by_length from TrainingArguments.
+            import inspect
+
+            if "group_by_length" in inspect.signature(TrainingArguments.__init__).parameters:
+                args_kwargs["group_by_length"] = bool(cfg.group_by_length)
+            args = TrainingArguments(**args_kwargs)
+
+            callbacks = [
                 make_nan_guard_callback(),
-                # The allocator is released during the run, not only after it.
                 make_cache_release_callback(profile),
-            ],
-        )
+                make_signal_stop_callback(stop_controller),
+            ]
+            if reporter.enabled:
+                callbacks.append(make_progress_callback(reporter))
+            if cfg.frozen_module_prefixes:
+                callbacks.append(make_frozen_guard_callback(frozen))
+            if cfg.checkpoint_snapshots:
+                from .checkpoint_snapshot import make_snapshot_ready_callback
 
-        train_output = trainer.train(
-            resume_from_checkpoint=str(resume_path) if resume_path else None
-        )
+                if run.spec_hash is None:
+                    raise ValueError("SFT snapshot requires a native recipe fingerprint")
+                callbacks.append(make_snapshot_ready_callback(run.spec_hash))
 
-        eval_metrics: dict[str, Any] = {}
-        if val_ds is not None:
-            profile.empty_cache()
-            eval_metrics = trainer.evaluate(eval_dataset=val_ds) or {}
+            trainer = Trainer(
+                model=model,
+                args=args,
+                train_dataset=train_ds,
+                eval_dataset=val_ds if run_eval_during_training else None,
+                data_collator=collator,
+                processing_class=processor if processor is not None else tokenizer,
+                callbacks=callbacks,
+            )
 
-        save_meta = _save_sft_artifacts(
-            model,
-            tokenizer,
-            out_dir,
-            save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
-            base_model_id=cfg.model_id,
-            spec_path=spec_path,
-        )
+            with stop_controller.training_loop():
+                train_output = trainer.train(
+                    resume_from_checkpoint=str(resume_path) if resume_path else None
+                )
+            stop_controller.raise_if_interrupted()
 
-        metrics_out = {k: float(v) for k, v in eval_metrics.items() if isinstance(v, (int, float))}
-        write_run_metadata(
-            out_dir,
-            model_def,
-            {
-                "train": dataset_dir / "train.jsonl",
-                "val": dataset_dir / "val.jsonl",
-            },
-            extra={
-                "run_id": run.run_id,
-                "smoke": smoke,
-                "device": str(target_device),
-                "profile": profile.name,
-                "distributed": distributed,
-                "model_revision": cfg.model_revision,
-                **save_meta,
-            },
-        )
-        finish_run(model_def, run.run_id, "completed", metrics=metrics_out)
+            eval_metrics: dict[str, Any] = {}
+            if val_ds is not None:
+                profile.empty_cache()
+                eval_metrics = trainer.evaluate(eval_dataset=val_ds) or {}
 
-        return SFTTrainResult(
-            out_dir=out_dir,
-            metrics=metrics_out,
-            train_runtime=float(
-                getattr(train_output, "metrics", {}).get("train_runtime", 0.0)
-                if hasattr(train_output, "metrics")
-                else 0.0
-            ),
-        )
-    except Exception as exc:
-        finish_run(model_def, run.run_id, "aborted", error=str(exc))
+            frozen.verify()
+            save_meta = _save_sft_artifacts(
+                model,
+                processor if processor is not None else tokenizer,
+                out_dir,
+                save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
+                base_model_id=cfg.model_id,
+                spec_path=spec_path,
+                quantized=quant is not None,
+            )
+            frozen.verify()
+
+            metrics_out = {
+                k: float(v) for k, v in eval_metrics.items() if isinstance(v, (int, float))
+            }
+            write_run_metadata(
+                out_dir,
+                model_def,
+                {
+                    "train": dataset_dir / "train.jsonl",
+                    "val": dataset_dir / "val.jsonl",
+                },
+                extra={
+                    "run_id": run.run_id,
+                    "smoke": smoke,
+                    "device": str(target_device),
+                    "profile": profile.name,
+                    "distributed": distributed,
+                    "precision": cfg.precision,
+                    "model_revision": cfg.model_revision,
+                    "processor_class": type(processor).__name__ if processor is not None else None,
+                    "frozen_component_sha256": frozen.hashes,
+                    **save_meta,
+                },
+            )
+            finish_run(model_def, run.run_id, "completed", metrics=metrics_out)
+            reporter.update(stage="completed")
+
+            return SFTTrainResult(
+                out_dir=out_dir,
+                metrics=metrics_out,
+                train_runtime=float(
+                    getattr(train_output, "metrics", {}).get("train_runtime", 0.0)
+                    if hasattr(train_output, "metrics")
+                    else 0.0
+                ),
+            )
+    except TrainingInterrupted as exc:
+        reporter.update(stage="interrupted")
+        finish_run(model_def, run.run_id, "interrupted", error=str(exc))
+        raise
+    except (Exception, KeyboardInterrupt) as exc:
+        reporter.update(stage="failed")
+        finish_run(model_def, run.run_id, "aborted", error=str(exc) or type(exc).__name__)
         raise

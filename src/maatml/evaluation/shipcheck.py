@@ -57,15 +57,16 @@ def ship_check(
     tiers: Optional[dict[str, str]] = None,
     max_regression: Optional[float] = None,
     replayed: bool = False,
+    gates_benchmark: Optional[str] = None,
     candidate_label: str = "candidate",
     baseline_label: str = "baseline",
 ) -> ShipVerdict:
     """Absolute, delta and population checks over two reports.
 
     ``max_regression`` replaces the one-row tolerance with a fixed drop for
-    every gated metric. ``replayed`` states that both reports come from a
-    controlled replay over the same rows, which satisfies the population
-    check even though the original evidence was measured elsewhere.
+    every gated metric. ``replayed`` records a controlled replay, but both
+    resulting reports must still identify the same population. When supplied,
+    ``gates_benchmark`` binds absolute floors to their measured population.
     """
     tiers = tiers or {}
     verdict = ShipVerdict(candidate=candidate_label, baseline=baseline_label)
@@ -96,6 +97,8 @@ def ship_check(
             )
         if failed:
             verdict.reasons.append(f"{candidate_label} below floor: {', '.join(failed)}")
+        if evidence.get("passed") is not True:
+            verdict.reasons.append(f"{candidate_label} has no successful aggregate gate verdict")
 
     # 2. delta
     regressions: list[str] = []
@@ -170,8 +173,14 @@ def ship_check(
         "baseline_split": base_split,
         "same": same,
         "replayed": bool(replayed),
+        "gates_benchmark": gates_benchmark,
     }
-    if not same and not replayed:
+    if gates_benchmark is not None and cand_split != gates_benchmark:
+        verdict.reasons.append(
+            "candidate population differs from evaluation.gates_benchmark; "
+            "reconcile measured baseline evidence before applying these floors"
+        )
+    if not same:
         shown = f"{str(cand_split)[:16]} vs {str(base_split)[:16]}"
         verdict.reasons.append(
             f"reports were measured on different splits ({shown}); a delta across a changed "

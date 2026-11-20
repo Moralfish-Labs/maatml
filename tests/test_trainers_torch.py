@@ -117,6 +117,41 @@ def test_build_chat_example_unmasks_every_assistant_turn() -> None:
     assert unmasked == "bd"
 
 
+def test_build_chat_example_refuses_a_row_longer_than_max_length() -> None:
+    """A long row is an error, never a left-truncated prompt: cutting from the
+    left drops the system turn the model is always served."""
+    from maatml.training.sft_base import RowTooLongError, build_chat_example
+
+    row = {"sample_id": "long-row", "request": "req", "expected": {"ok": True}}
+    spec = {"system": "S", "user_template": "U:<<USER_REQUEST>>"}
+    kwargs = {"target_field": "expected", "request_field": "request"}
+    length = len("[system]S[user]U:req[assistant]" + '{"ok":true}')
+
+    fits = build_chat_example(row, spec, _CharTokenizer(), max_length=length, **kwargs)
+    assert fits["length"] == length
+    assert fits["input_ids"][0] == ord("[")
+
+    with pytest.raises(RowTooLongError, match=rf"row long-row: {length} tokens exceed") as raised:
+        build_chat_example(row, spec, _CharTokenizer(), max_length=length - 1, **kwargs)
+    assert isinstance(raised.value, ValueError)
+    assert f"max_input_tokens={length - 1}" in str(raised.value)
+
+
+def test_build_chat_example_refuses_a_long_messages_row() -> None:
+    from maatml.training.sft_base import RowTooLongError, build_chat_example
+
+    row = {
+        "sample_id": "chat-row",
+        "messages": [
+            {"role": "system", "content": "always served"},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ],
+    }
+    with pytest.raises(RowTooLongError, match="row chat-row"):
+        build_chat_example(row, {}, _CharTokenizer(), max_length=8, target_field="unused")
+
+
 def test_sft_collator_pads_and_masks_padding() -> None:
     from maatml.training.sft_base import SFTDataCollator
 

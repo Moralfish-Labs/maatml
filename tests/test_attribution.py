@@ -17,6 +17,7 @@ from maatml.data.attribution import (
     read_attribution,
     read_corpus_lock,
     render_attribution_block,
+    write_corpus_lock,
 )
 from maatml.data.pipeline import prepare
 from maatml.export.bundle import export_safetensors_bundle
@@ -345,3 +346,36 @@ def test_render_attribution_block_without_sources_says_so() -> None:
     assert lines[0] == "## Sources"
     assert any("No attribution table" in line for line in lines)
     assert lines[-1].startswith("Corpus lock `abababababababab`: 0 input file(s)")
+
+
+def test_corpus_lock_hashes_non_row_assets_without_parsing_them(tmp_path: Path) -> None:
+    seed = tmp_path / "seed.jsonl"
+    seed.write_text('{"sample_id":"one"}\n')
+    prompt = tmp_path / "system.txt"
+    prompt.write_text("Retrieve evidence before answering.\n")
+    schema = tmp_path / "tools.json"
+    schema.write_text('[\n  {"tool": "search"}\n]\n')
+    kwargs = {
+        "files": [seed],
+        "asset_files": [prompt, schema],
+        "attribution_path": None,
+        "check": None,
+    }
+    write_corpus_lock(tmp_path, **kwargs)
+    before = read_corpus_lock(tmp_path)
+    assert before is not None
+    assert before["files"] == [
+        {"path": str(seed), "sha256": sha256_file(seed), "rows": 1},
+        {"path": str(prompt), "sha256": sha256_file(prompt), "kind": "asset"},
+        {"path": str(schema), "sha256": sha256_file(schema), "kind": "asset"},
+    ]
+    prompt.write_text("Changed prompt")
+    write_corpus_lock(tmp_path, **kwargs)
+    after = read_corpus_lock(tmp_path)
+    assert after is not None and before["lock_sha256"] != after["lock_sha256"]
+    prompt.unlink()
+    with pytest.raises(AttributionError, match="supporting asset not found"):
+        write_corpus_lock(tmp_path, **kwargs)
+    seed.write_text("Not JSONL")
+    with pytest.raises(json.JSONDecodeError):
+        write_corpus_lock(tmp_path, files=[seed], attribution_path=None, check=None)

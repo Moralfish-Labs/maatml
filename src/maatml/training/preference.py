@@ -19,13 +19,15 @@ from ..device import (
     effective_dataloader_workers,
     resolve_training_placement,
 )
+from ..progress import JobProgressReporter, make_progress_callback, resolve_progress_file
 from ..runs import begin_training_run, finish_run, normalize_report_to
 from ..utils.io import iter_jsonl
 from .guards import make_nan_guard_callback, write_run_metadata
 from .load import from_pretrained_kwargs, maybe_prepare_kbit
 from .schedule import precision_flags
-from .sft_base import _maybe_attach_lora, _save_sft_artifacts
+from .sft_base import _maybe_attach_lora, _refuse_quantized_merge, _save_sft_artifacts
 from .sft_config import LoraSettings, QuantizationSettings, validate_precision
+from .signals import TrainingInterrupted, TrainingStopController, make_signal_stop_callback
 
 
 class PreferenceTrainConfig(BaseModel):
@@ -117,6 +119,7 @@ def train_preference(
     seed: Optional[int] = None,
     resume: Optional[str] = None,
     trial: Optional[dict[str, Any]] = None,
+    progress_file: Optional[str | Path] = None,
 ) -> PreferenceTrainResult:
     """Train with TRL ``DPOTrainer`` or ``ORPOTrainer``."""
     _require_trl()
@@ -137,6 +140,12 @@ def train_preference(
     set_seed(cfg.seed)
 
     dataset_dir = Path(dataset_dir) if dataset_dir else model_def.prepared_dir
+    quant = cfg.quantization if cfg.quantization and cfg.quantization.enabled() else None
+    _refuse_quantized_merge(
+        cfg.lora.save_mode,
+        lora_enabled=cfg.lora.enabled,
+        quantized=quant is not None,
+    )
     target_device, profile, distributed = resolve_training_placement(device)
     run, out_dir, resume_path = begin_training_run(
         model_def,
@@ -147,161 +156,182 @@ def train_preference(
         resume=resume,
         trial=trial,
     )
+    reporter = JobProgressReporter(
+        resolve_progress_file(progress_file),
+        run_id=run.run_id,
+        artifact_uri=str(out_dir),
+    )
+    stop_controller = TrainingStopController()
 
-    # The run record exists from here on, so row loading failures abort it too.
+    # The run record exists from here on, so row loading failures abort/interrupt it too.
     try:
-        train_rows, identical_train = _load_preference_rows(dataset_dir / "train.jsonl", limit)
-        val_limit = None if limit is None else max(2, limit // 4)
-        val_rows, identical_val = _load_preference_rows(dataset_dir / "val.jsonl", val_limit)
-        if not train_rows:
-            raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
-        if identical_train or identical_val:
-            warnings.warn(
-                f"{identical_train} train / {identical_val} val preference rows have "
-                "identical chosen and rejected completions; they carry no preference "
-                "signal",
-                stacklevel=2,
+        with stop_controller.installed():
+            reporter.update(stage="train")
+            train_rows, identical_train = _load_preference_rows(dataset_dir / "train.jsonl", limit)
+            val_limit = None if limit is None else max(2, limit // 4)
+            val_rows, identical_val = _load_preference_rows(dataset_dir / "val.jsonl", val_limit)
+            if not train_rows:
+                raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
+            if identical_train or identical_val:
+                warnings.warn(
+                    f"{identical_train} train / {identical_val} val preference rows have "
+                    "identical chosen and rejected completions; they carry no preference "
+                    "signal",
+                    stacklevel=2,
+                )
+
+            tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            load_kwargs = from_pretrained_kwargs(
+                profile,
+                precision=cfg.precision,
+                attn_implementation=cfg.attn_implementation,
+                quantization=quant,
+                revision=cfg.model_revision,
+                distributed=distributed,
+            )
+            model = AutoModelForCausalLM.from_pretrained(cfg.model_id, **load_kwargs)
+            model = maybe_prepare_kbit(model, quant)
+
+            peft_config = None
+            if cfg.lora.enabled:
+                peft_config = LoraConfig(
+                    r=cfg.lora.r,
+                    lora_alpha=cfg.lora.alpha,
+                    lora_dropout=cfg.lora.dropout,
+                    target_modules=cfg.lora.target_modules,
+                    task_type=TaskType.CAUSAL_LM,
+                )
+                if quant is None:
+                    model = _maybe_attach_lora(model, cfg.lora)
+                    peft_config = None  # already attached
+
+            train_ds = Dataset.from_list(train_rows)
+            eval_ds = Dataset.from_list(val_rows) if val_rows else None
+
+            use_bf16, use_fp16 = precision_flags(
+                cfg.precision, device=target_device, distributed=distributed
+            )
+            num_workers = effective_dataloader_workers(profile, cfg.dataloader_workers)
+            report_to = normalize_report_to(cfg.report_to)
+
+            # DPO and ORPO differ only in which TRL config/trainer pair they use.
+            # Keeping one body means a change to the argument set cannot land for
+            # one method and silently miss the other.
+            if method == "dpo":
+                from trl import DPOConfig as PreferenceConfig
+                from trl import DPOTrainer as PreferenceTrainer
+            else:
+                from trl import ORPOConfig as PreferenceConfig
+                from trl import ORPOTrainer as PreferenceTrainer
+
+            args = PreferenceConfig(
+                output_dir=str(out_dir),
+                run_name=run.run_id,
+                per_device_train_batch_size=cfg.batch_size,
+                per_device_eval_batch_size=cfg.batch_size,
+                gradient_accumulation_steps=cfg.grad_accum,
+                learning_rate=cfg.learning_rate,
+                num_train_epochs=cfg.epochs,
+                weight_decay=cfg.weight_decay,
+                warmup_ratio=cfg.warmup_ratio,
+                logging_steps=cfg.logging_steps,
+                save_steps=cfg.save_steps,
+                save_total_limit=2,
+                seed=cfg.seed,
+                bf16=use_bf16,
+                fp16=use_fp16,
+                gradient_checkpointing=bool(cfg.grad_checkpointing)
+                and profile.allow_grad_checkpointing,
+                dataloader_num_workers=num_workers,
+                report_to=report_to,
+                max_steps=cfg.max_steps,
+                beta=cfg.beta,
+                max_length=cfg.max_input_tokens,
+                max_prompt_length=cfg.max_input_tokens // 2,
+                remove_unused_columns=False,
+                use_cpu=(not distributed) and target_device.type == "cpu",
+            )
+            callbacks = [make_nan_guard_callback(), make_signal_stop_callback(stop_controller)]
+            if reporter.enabled:
+                callbacks.append(make_progress_callback(reporter))
+            trainer_kwargs: dict[str, Any] = {
+                "model": model,
+                "args": args,
+                "train_dataset": train_ds,
+                "eval_dataset": eval_ds,
+                "processing_class": tokenizer,
+                "callbacks": callbacks,
+            }
+            if peft_config is not None:
+                trainer_kwargs["peft_config"] = peft_config
+            try:
+                trainer = PreferenceTrainer(**trainer_kwargs)
+            except TypeError:
+                # Older TRL takes `tokenizer` rather than `processing_class`.
+                trainer_kwargs.pop("processing_class", None)
+                trainer_kwargs["tokenizer"] = tokenizer
+                trainer = PreferenceTrainer(**trainer_kwargs)
+
+            with stop_controller.training_loop():
+                train_output = trainer.train(
+                    resume_from_checkpoint=str(resume_path) if resume_path else None
+                )
+            stop_controller.raise_if_interrupted()
+            metrics_out: dict[str, float] = {}
+            train_metrics = getattr(train_output, "metrics", None) or {}
+            for k, v in train_metrics.items():
+                if isinstance(v, (int, float)):
+                    metrics_out[str(k)] = float(v)
+
+            # Same saver as SFT, so training.lora.save_mode (merged | adapter |
+            # both) means the same thing for DPO/ORPO as it does for causal SFT.
+            # TRL may have attached the adapter itself when peft_config was passed.
+            trained_model = getattr(trainer, "model", model)
+            save_meta = _save_sft_artifacts(
+                trained_model,
+                tokenizer,
+                out_dir,
+                save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
+                base_model_id=cfg.model_id,
+                quantized=quant is not None,
             )
 
-        tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        quant = cfg.quantization if cfg.quantization and cfg.quantization.enabled() else None
-        load_kwargs = from_pretrained_kwargs(
-            profile,
-            precision=cfg.precision,
-            attn_implementation=cfg.attn_implementation,
-            quantization=quant,
-            revision=cfg.model_revision,
-        )
-        model = AutoModelForCausalLM.from_pretrained(cfg.model_id, **load_kwargs)
-        model = maybe_prepare_kbit(model, quant)
-
-        peft_config = None
-        if cfg.lora.enabled:
-            peft_config = LoraConfig(
-                r=cfg.lora.r,
-                lora_alpha=cfg.lora.alpha,
-                lora_dropout=cfg.lora.dropout,
-                target_modules=cfg.lora.target_modules,
-                task_type=TaskType.CAUSAL_LM,
+            write_run_metadata(
+                out_dir,
+                model_def,
+                {
+                    "train": dataset_dir / "train.jsonl",
+                    "val": dataset_dir / "val.jsonl",
+                },
+                extra={
+                    "run_id": run.run_id,
+                    "smoke": smoke,
+                    "device": str(target_device),
+                    "profile": profile.name,
+                    "method": method,
+                    "distributed": distributed,
+                    "precision": cfg.precision,
+                    "model_revision": cfg.model_revision,
+                    **save_meta,
+                },
             )
-            if quant is None:
-                model = _maybe_attach_lora(model, cfg.lora)
-                peft_config = None  # already attached
-
-        train_ds = Dataset.from_list(train_rows)
-        eval_ds = Dataset.from_list(val_rows) if val_rows else None
-
-        use_bf16, use_fp16 = precision_flags(
-            cfg.precision, device=target_device, distributed=distributed
-        )
-        num_workers = effective_dataloader_workers(profile, cfg.dataloader_workers)
-        report_to = normalize_report_to(cfg.report_to)
-
-        # DPO and ORPO differ only in which TRL config/trainer pair they use.
-        # Keeping one body means a change to the argument set cannot land for
-        # one method and silently miss the other.
-        if method == "dpo":
-            from trl import DPOConfig as PreferenceConfig
-            from trl import DPOTrainer as PreferenceTrainer
-        else:
-            from trl import ORPOConfig as PreferenceConfig
-            from trl import ORPOTrainer as PreferenceTrainer
-
-        args = PreferenceConfig(
-            output_dir=str(out_dir),
-            run_name=run.run_id,
-            per_device_train_batch_size=cfg.batch_size,
-            per_device_eval_batch_size=cfg.batch_size,
-            gradient_accumulation_steps=cfg.grad_accum,
-            learning_rate=cfg.learning_rate,
-            num_train_epochs=cfg.epochs,
-            weight_decay=cfg.weight_decay,
-            warmup_ratio=cfg.warmup_ratio,
-            logging_steps=cfg.logging_steps,
-            save_steps=cfg.save_steps,
-            save_total_limit=2,
-            seed=cfg.seed,
-            bf16=use_bf16,
-            fp16=use_fp16,
-            gradient_checkpointing=bool(cfg.grad_checkpointing)
-            and profile.allow_grad_checkpointing,
-            dataloader_num_workers=num_workers,
-            report_to=report_to,
-            max_steps=cfg.max_steps,
-            beta=cfg.beta,
-            max_length=cfg.max_input_tokens,
-            max_prompt_length=cfg.max_input_tokens // 2,
-            remove_unused_columns=False,
-            use_cpu=(not distributed) and target_device.type == "cpu",
-        )
-        trainer_kwargs: dict[str, Any] = {
-            "model": model,
-            "args": args,
-            "train_dataset": train_ds,
-            "eval_dataset": eval_ds,
-            "processing_class": tokenizer,
-            "callbacks": [make_nan_guard_callback()],
-        }
-        if peft_config is not None:
-            trainer_kwargs["peft_config"] = peft_config
-        try:
-            trainer = PreferenceTrainer(**trainer_kwargs)
-        except TypeError:
-            # Older TRL takes `tokenizer` rather than `processing_class`.
-            trainer_kwargs.pop("processing_class", None)
-            trainer_kwargs["tokenizer"] = tokenizer
-            trainer = PreferenceTrainer(**trainer_kwargs)
-
-        train_output = trainer.train(
-            resume_from_checkpoint=str(resume_path) if resume_path else None
-        )
-        metrics_out: dict[str, float] = {}
-        train_metrics = getattr(train_output, "metrics", None) or {}
-        for k, v in train_metrics.items():
-            if isinstance(v, (int, float)):
-                metrics_out[str(k)] = float(v)
-
-        # Same saver as SFT, so training.lora.save_mode (merged | adapter |
-        # both) means the same thing for DPO/ORPO as it does for causal SFT.
-        # TRL may have attached the adapter itself when peft_config was passed.
-        trained_model = getattr(trainer, "model", model)
-        save_meta = _save_sft_artifacts(
-            trained_model,
-            tokenizer,
-            out_dir,
-            save_mode=cfg.lora.save_mode if cfg.lora.enabled else "merged",
-            base_model_id=cfg.model_id,
-        )
-
-        write_run_metadata(
-            out_dir,
-            model_def,
-            {
-                "train": dataset_dir / "train.jsonl",
-                "val": dataset_dir / "val.jsonl",
-            },
-            extra={
-                "run_id": run.run_id,
-                "smoke": smoke,
-                "device": str(target_device),
-                "profile": profile.name,
-                "method": method,
-                "distributed": distributed,
-                "model_revision": cfg.model_revision,
-                **save_meta,
-            },
-        )
-        finish_run(model_def, run.run_id, "completed", metrics=metrics_out)
-        return PreferenceTrainResult(
-            out_dir=out_dir,
-            metrics=metrics_out,
-            train_runtime=float(metrics_out.get("train_runtime", 0.0)),
-        )
-    except Exception as exc:
-        finish_run(model_def, run.run_id, "aborted", error=str(exc))
+            finish_run(model_def, run.run_id, "completed", metrics=metrics_out)
+            reporter.update(stage="completed")
+            return PreferenceTrainResult(
+                out_dir=out_dir,
+                metrics=metrics_out,
+                train_runtime=float(metrics_out.get("train_runtime", 0.0)),
+            )
+    except TrainingInterrupted as exc:
+        reporter.update(stage="interrupted")
+        finish_run(model_def, run.run_id, "interrupted", error=str(exc))
+        raise
+    except (Exception, KeyboardInterrupt) as exc:
+        reporter.update(stage="failed")
+        finish_run(model_def, run.run_id, "aborted", error=str(exc) or type(exc).__name__)
         raise
 
 

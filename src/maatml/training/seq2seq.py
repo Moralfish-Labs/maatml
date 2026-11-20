@@ -21,6 +21,7 @@ from ..device import (
     effective_dataloader_workers,
     resolve_training_placement,
 )
+from ..progress import JobProgressReporter, make_progress_callback, resolve_progress_file
 from ..runs import begin_training_run, finish_run, normalize_report_to
 from ..utils.io import iter_jsonl
 from .guards import ensure_tokenizer_model_contract, make_nan_guard_callback, write_run_metadata
@@ -28,6 +29,7 @@ from .load import from_pretrained_kwargs
 from .schedule import precision_flags, total_training_steps
 from .schedule import warmup_steps as resolve_warmup_steps
 from .sft_config import reject_unknown_training_keys, validate_precision
+from .signals import TrainingInterrupted, TrainingStopController, make_signal_stop_callback
 
 
 @dataclass
@@ -250,6 +252,8 @@ def _train_loop(
     group_by_length: bool = False,
     resume_from_checkpoint: Optional[str] = None,
     distributed: bool = False,
+    stop_controller: Optional[TrainingStopController] = None,
+    progress_reporter: Optional[JobProgressReporter] = None,
 ) -> Seq2SeqResult:
     from transformers import (
         AutoModelForSeq2SeqLM,
@@ -330,6 +334,12 @@ def _train_loop(
         padding=False,
     )
 
+    callbacks = [make_nan_guard_callback()]
+    if stop_controller is not None:
+        callbacks.append(make_signal_stop_callback(stop_controller))
+    if progress_reporter is not None and progress_reporter.enabled:
+        callbacks.append(make_progress_callback(progress_reporter))
+
     trainer = Seq2SeqTrainer(
         model=model,
         args=args,
@@ -337,10 +347,15 @@ def _train_loop(
         eval_dataset=val_ds if run_eval else None,
         data_collator=collator,
         processing_class=tokenizer,
-        callbacks=[make_nan_guard_callback()],
+        callbacks=callbacks,
     )
 
-    train_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    if stop_controller is not None:
+        with stop_controller.training_loop():
+            train_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+        stop_controller.raise_if_interrupted()
+    else:
+        train_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     eval_metrics: dict = {}
     if val_ds is not None:
         profile.empty_cache()
@@ -362,6 +377,7 @@ def _train_loop(
             "device": device_name,
             "profile": profile.name,
             "distributed": distributed,
+            "precision": cfg.precision,
             "model_revision": cfg.model_revision,
         },
     )
@@ -388,6 +404,7 @@ def train_seq2seq_model(
     seed: Optional[int] = None,
     resume: Optional[str] = None,
     trial: Optional[dict] = None,
+    progress_file: Optional[str | Path] = None,
 ) -> Seq2SeqResult:
     """Train a seq2seq model from a ``ModelDefinition``."""
     from transformers import AutoTokenizer
@@ -414,56 +431,53 @@ def train_seq2seq_model(
         resume=resume,
         trial=trial,
     )
+    reporter = JobProgressReporter(
+        resolve_progress_file(progress_file),
+        run_id=run.run_id,
+        artifact_uri=str(out_dir),
+    )
+    stop_controller = TrainingStopController()
 
     # Everything after the run record exists runs under the finish handler:
     # a tokenizer download failure or an unreadable split must mark the run
-    # `aborted`, not leave it `running` forever.
+    # `aborted`/`interrupted`, not leave it `running` forever.
     try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            cfg.model_id, use_fast=True, revision=cfg.model_revision
-        )
+        with stop_controller.installed():
+            reporter.update(stage="train")
+            tokenizer = AutoTokenizer.from_pretrained(
+                cfg.model_id, use_fast=True, revision=cfg.model_revision
+            )
 
-        train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
-        val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
-        if limit is not None:
-            train_rows = train_rows[:limit]
-            val_rows = val_rows[: max(2, limit // 4)]
-        if not train_rows:
-            raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
+            train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
+            val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
+            if limit is not None:
+                train_rows = train_rows[:limit]
+                val_rows = val_rows[: max(2, limit // 4)]
+            if not train_rows:
+                raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
 
-        train_rows, dropped_train = _drop_targetless(train_rows, target_field)
-        val_rows, dropped_val = _drop_targetless(val_rows, target_field)
-        if dropped_train or dropped_val:
+            train_rows, dropped_train = _drop_targetless(train_rows, target_field)
+            val_rows, dropped_val = _drop_targetless(val_rows, target_field)
+            if dropped_train or dropped_val:
+                print(  # noqa: T201  training progress goes to stdout
+                    f"seq2seq: dropped {dropped_train} train / {dropped_val} val rows "
+                    f"with no {target_field!r} (they would have trained on an empty target)"
+                )
+            if not train_rows:
+                raise ValueError(
+                    f"Every training row in {dataset_dir / 'train.jsonl'} is missing "
+                    f"{target_field!r}; check dataset.target_field"
+                )
+
             print(  # noqa: T201  training progress goes to stdout
-                f"seq2seq: dropped {dropped_train} train / {dropped_val} val rows "
-                f"with no {target_field!r} (they would have trained on an empty target)"
-            )
-        if not train_rows:
-            raise ValueError(
-                f"Every training row in {dataset_dir / 'train.jsonl'} is missing "
-                f"{target_field!r}; check dataset.target_field"
+                f"seq2seq: run={run.run_id} model={cfg.model_id} train={len(train_rows)} "
+                f"val={len(val_rows)} src_len={cfg.source_max_len} tgt_len={cfg.target_max_len} "
+                f"epochs={cfg.epochs}"
             )
 
-        print(  # noqa: T201  training progress goes to stdout
-            f"seq2seq: run={run.run_id} model={cfg.model_id} train={len(train_rows)} "
-            f"val={len(val_rows)} src_len={cfg.source_max_len} tgt_len={cfg.target_max_len} "
-            f"epochs={cfg.epochs}"
-        )
-
-        key_order = list(target_key_order) if target_key_order else None
-        train_ds = _build_dataset(
-            train_rows,
-            tokenizer,
-            cfg.source_max_len,
-            cfg.target_max_len,
-            source_prefix=source_prefix,
-            target_key_order=key_order,
-            request_field=request_field,
-            target_field=target_field,
-        )
-        val_ds = (
-            _build_dataset(
-                val_rows,
+            key_order = list(target_key_order) if target_key_order else None
+            train_ds = _build_dataset(
+                train_rows,
                 tokenizer,
                 cfg.source_max_len,
                 cfg.target_max_len,
@@ -472,34 +486,53 @@ def train_seq2seq_model(
                 request_field=request_field,
                 target_field=target_field,
             )
-            if val_rows
-            else None
-        )
+            val_ds = (
+                _build_dataset(
+                    val_rows,
+                    tokenizer,
+                    cfg.source_max_len,
+                    cfg.target_max_len,
+                    source_prefix=source_prefix,
+                    target_key_order=key_order,
+                    request_field=request_field,
+                    target_field=target_field,
+                )
+                if val_rows
+                else None
+            )
 
-        report_to = normalize_report_to(training_dict.get("report_to"))
-        group_by_length = bool(training_dict.get("group_by_length", False))
-        result = _train_loop(
-            cfg,
-            train_ds,
-            val_ds,
-            out_dir,
-            tokenizer,
-            profile=profile,
-            embedding_strategy=training_dict.get("embedding_strategy"),
-            model_def=model_def,
-            dataset_dir=dataset_dir,
-            smoke=smoke,
-            device_name=str(target_device),
-            run_id=run.run_id,
-            report_to=report_to,
-            group_by_length=group_by_length,
-            resume_from_checkpoint=str(resume_path) if resume_path else None,
-            distributed=distributed,
-        )
-        finish_run(model_def, run.run_id, "completed", metrics=result.metrics)
-        return result
-    except Exception as exc:
-        finish_run(model_def, run.run_id, "aborted", error=str(exc))
+            report_to = normalize_report_to(training_dict.get("report_to"))
+            group_by_length = bool(training_dict.get("group_by_length", False))
+            result = _train_loop(
+                cfg,
+                train_ds,
+                val_ds,
+                out_dir,
+                tokenizer,
+                profile=profile,
+                embedding_strategy=training_dict.get("embedding_strategy"),
+                model_def=model_def,
+                dataset_dir=dataset_dir,
+                smoke=smoke,
+                device_name=str(target_device),
+                run_id=run.run_id,
+                report_to=report_to,
+                group_by_length=group_by_length,
+                resume_from_checkpoint=str(resume_path) if resume_path else None,
+                distributed=distributed,
+                stop_controller=stop_controller,
+                progress_reporter=reporter,
+            )
+            finish_run(model_def, run.run_id, "completed", metrics=result.metrics)
+            reporter.update(stage="completed")
+            return result
+    except TrainingInterrupted as exc:
+        reporter.update(stage="interrupted")
+        finish_run(model_def, run.run_id, "interrupted", error=str(exc))
+        raise
+    except (Exception, KeyboardInterrupt) as exc:
+        reporter.update(stage="failed")
+        finish_run(model_def, run.run_id, "aborted", error=str(exc) or type(exc).__name__)
         raise
 
 

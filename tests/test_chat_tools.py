@@ -563,3 +563,38 @@ def test_prepare_keeps_tool_fields_and_refuses_malformed_rows(tmp_path: Path) ->
     bad["messages"][2]["tool_calls"][0]["function"]["arguments"] = "{oops"
     with pytest.raises(ValueError, match="malformed chat rows"):
         prepare_rows(md, [bad, *rows[1:]], out_dir=tmp_path / "out2")
+
+
+def test_parse_tool_calls_gemma4_and_mixed_shapes() -> None:
+    gemma_reply = (
+        "<|channel>thought\n<channel|>Checking that now.\n"
+        '<|tool_call>call:run{command:<|"|>ls -la "dir" {a,b}<|"|>,'
+        "dry_run:false,retries:2,ratio:0.5,note:null,"
+        'nested:{<|"|>k<|"|>:true,items:[1,<|"|>two<|"|>]}'
+        "}<tool_call|>"
+        "<|tool_call>call:ping{}<tool_call|>"
+    )
+    parsed = parse_tool_calls(gemma_reply)
+    assert parsed.content == "Checking that now."
+    assert parsed.errors == []
+    assert [c["function"] for c in parsed.tool_calls] == [
+        {
+            "name": "run",
+            "arguments": {
+                "command": 'ls -la "dir" {a,b}',
+                "dry_run": False,
+                "retries": 2,
+                "ratio": 0.5,
+                "note": None,
+                "nested": {"k": True, "items": [1, "two"]},
+            },
+        },
+        {"name": "ping", "arguments": {}},
+    ]
+
+    bad_gemma = parse_tool_calls(
+        "<|tool_call>notacall{}<tool_call|><|tool_call>call:half{a:1}<unterminated"
+    )
+    assert bad_gemma.tool_calls == []
+    assert len(bad_gemma.errors) == 2
+    assert "unterminated <|tool_call>" in bad_gemma.errors[1]

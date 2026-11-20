@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -13,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # used to fall through resolve_load_dtype as "fp32", so `precision: bfloat16`
 # or a typo trained at a precision nobody asked for.
 VALID_PRECISIONS = ("bf16", "fp16", "fp32")
+VALID_SAVE_STRATEGIES = ("no", "steps", "epoch")
+VALID_REASONING_LOSS_MODES = ("include", "mask", "reasoning_only")
 # Read by the lifecycle after training, not by any trainer.
 LIFECYCLE_TRAINING_KEYS = frozenset({"select_by"})
 
@@ -56,11 +59,28 @@ class LoraSettings(BaseModel):
     r: int = 16
     alpha: int = 32
     dropout: float = 0.05
-    target_modules: list[str] = Field(
+    # A list names modules by suffix or in full. A string is one regular
+    # expression matched against the whole module name, for a base whose other
+    # towers reuse the same projection names.
+    target_modules: Union[list[str], str] = Field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
     )
     # merged (default) | adapter | both, see train_sft artifact save path.
     save_mode: str = "merged"
+
+    @field_validator("target_modules")
+    @classmethod
+    def _check_target_modules(cls, v: Union[list[str], str]) -> Union[list[str], str]:
+        if isinstance(v, str):
+            try:
+                re.compile(v)
+            except re.error as exc:
+                raise ValueError(
+                    f"training.lora.target_modules is not a regular expression: {exc}"
+                ) from exc
+            if not v.strip():
+                raise ValueError("training.lora.target_modules must not be an empty expression")
+        return v
 
 
 class QuantizationSettings(BaseModel):
@@ -96,8 +116,16 @@ class SFTTrainConfig(BaseModel):
     grad_checkpointing: bool = False
     eval_steps: int = 9999
     save_steps: int = 200
+    save_strategy: str = "steps"
+    save_only_model: bool = False
+    checkpoint_snapshots: bool = False
     logging_steps: int = 20
+    disable_tqdm: bool = False
     max_steps: int = -1
+    optim: str = "adamw_torch"
+    lr_scheduler_type: str = "linear"
+    lr_scheduler_kwargs: Optional[dict[str, Any]] = None
+    max_grad_norm: float = Field(default=1.0, ge=0.0)
     lora: LoraSettings = Field(default_factory=LoraSettings)
     report_to: Any = None
     group_by_length: bool = False
@@ -105,13 +133,48 @@ class SFTTrainConfig(BaseModel):
     attn_implementation: Optional[str] = None
     dataloader_workers: Optional[int] = None
     model_revision: Optional[str] = None
+    frozen_module_prefixes: list[str] = Field(default_factory=list)
     # save_total_limit: how many checkpoint-* dirs survive for select_by to compare.
     keep_checkpoints: int = Field(default=2, ge=1)
+    # Controls whether reasoning spans (<think>, <thought>, <|thought|>,
+    # <|channel>thought) inside assistant turns contribute to SFT loss:
+    # "include" (default), "mask" (answer/tool tokens only), or "reasoning_only".
+    reasoning_loss: str = "include"
 
     @field_validator("precision")
     @classmethod
     def _check_precision(cls, v: str) -> str:
         return validate_precision(v)
+
+    @field_validator("reasoning_loss")
+    @classmethod
+    def _check_reasoning_loss(cls, v: Any) -> str:
+        text = str(v).strip()
+        if text not in VALID_REASONING_LOSS_MODES:
+            raise ValueError(
+                f"training.reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
+                f"got {v!r}"
+            )
+        return text
+
+    @field_validator("save_strategy")
+    @classmethod
+    def _check_save_strategy(cls, v: Any) -> str:
+        text = str(v)
+        if text not in VALID_SAVE_STRATEGIES:
+            raise ValueError(
+                f"training.save_strategy must be one of {', '.join(VALID_SAVE_STRATEGIES)}; "
+                f"got {v!r}"
+            )
+        return text
+
+    @field_validator("optim", "lr_scheduler_type")
+    @classmethod
+    def _check_nonempty_str(cls, v: Any) -> str:
+        text = str(v).strip()
+        if not text:
+            raise ValueError("optimizer/scheduler option must be a non-empty string")
+        return text
 
 
 @dataclass

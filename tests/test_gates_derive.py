@@ -172,13 +172,17 @@ def test_gate_enforcement_records_the_split_and_flags_a_foreign_floor(tmp_path: 
     assert report.gates["population_mismatch"] is True
     assert report.passed is True  # a warning, unless strict
 
+    class NeverLoadPredictor:
+        def setup(self, *args, **kwargs):
+            pytest.fail("population mismatch must fail before loading the model")
+
     with pytest.raises(GateConfigError, match="different population"):
         run_evaluation(
             checkpoint_dir=tmp_path / "ckpt",
             dataset_dir=_dataset(tmp_path, rows),
             out_path=tmp_path / "eval" / "r2.json",
             model_def=md,
-            predictor=lambda row: "{}",
+            predictor=NeverLoadPredictor(),
             device="cpu",
             enforce_gates=True,
             strict_population=True,

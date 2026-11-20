@@ -115,6 +115,30 @@ def test_set_reaches_the_predictor_and_is_recorded_on_the_report(tmp_path: Path)
     assert report.extras["decode_threshold"]["value"] == 0.4
 
 
+def test_output_directory_preserves_historical_reports(tmp_path: Path) -> None:
+    mdir = _model_dir(tmp_path)
+    historical = mdir / "output/eval/run-o.json"
+    historical.parent.mkdir()
+    historical.write_text("historical evidence")
+    destination = tmp_path / "replay"
+    result = runner.invoke(
+        app,
+        [
+            "evaluate",
+            str(mdir),
+            "--device",
+            "cpu",
+            "--cache",
+            "--out",
+            str(destination),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert historical.read_text() == "historical evidence"
+    assert json.loads((destination / "run-o.json").read_text())["n"] == 6
+    assert (destination / "run-o.predictions.jsonl").is_file()
+
+
 def test_set_is_refused_with_gate_and_blind(tmp_path: Path) -> None:
     mdir = _model_dir(tmp_path)
     result = runner.invoke(

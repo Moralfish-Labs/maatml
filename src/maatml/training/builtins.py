@@ -53,3 +53,17 @@ def train_diffusion_lora(model_def: Any, **kwargs: Any) -> Any:
     from .diffusion import train_diffusion_lora as _train
 
     return _train(model_def, **kwargs)
+
+
+@register_trainer("filtered_imitation")
+def train_filtered_imitation(model_def: Any, **kwargs: Any) -> Any:
+    from .filtered_imitation import train_filtered_imitation as _train
+
+    return _train(model_def, **kwargs)
+
+
+@register_trainer("grpo")
+def train_grpo(model_def: Any, **kwargs: Any) -> Any:
+    from .grpo import train_grpo as _train
+
+    return _train(model_def, **kwargs)

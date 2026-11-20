@@ -24,6 +24,7 @@ from ..device import (
     effective_dataloader_workers,
     resolve_training_placement,
 )
+from ..progress import JobProgressReporter, make_progress_callback, resolve_progress_file
 from ..registry import TRANSFORMS
 from ..runs import begin_training_run, finish_run, normalize_report_to
 from ..utils.io import iter_jsonl
@@ -33,6 +34,7 @@ from .load import from_pretrained_kwargs
 from .schedule import precision_flags, total_training_steps
 from .schedule import warmup_steps as resolve_warmup_steps
 from .sft_config import reject_unknown_training_keys, validate_precision
+from .signals import TrainingInterrupted, TrainingStopController, make_signal_stop_callback
 
 _PATH_TOKEN = re.compile(r"([^[.\]]+)|\[(\d+)\]")
 
@@ -460,6 +462,8 @@ def _train_loop(
     report_to,
     resume_from_checkpoint: Optional[str] = None,
     distributed: bool = False,
+    stop_controller: Optional[TrainingStopController] = None,
+    progress_reporter: Optional[JobProgressReporter] = None,
 ) -> MultiHeadResult:
     from torch import nn
     from transformers import AutoModel, Trainer, TrainingArguments, set_seed
@@ -595,16 +599,27 @@ def _train_loop(
                 merged[f"loss_{name}"] = val
             return super().log(merged, *args, **kwargs)
 
+    callbacks = [make_nan_guard_callback()]
+    if stop_controller is not None:
+        callbacks.append(make_signal_stop_callback(stop_controller))
+    if progress_reporter is not None and progress_reporter.enabled:
+        callbacks.append(make_progress_callback(progress_reporter))
+
     trainer = _MultiHeadTrainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=val_ds if run_eval else None,
         processing_class=tokenizer,
-        callbacks=[make_nan_guard_callback()],
+        callbacks=callbacks,
     )
 
-    train_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    if stop_controller is not None:
+        with stop_controller.training_loop():
+            train_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+        stop_controller.raise_if_interrupted()
+    else:
+        train_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     eval_metrics: dict = {}
     if val_ds is not None:
         profile.empty_cache()
@@ -636,6 +651,7 @@ def _train_loop(
             "device": device_name,
             "profile": profile.name,
             "distributed": distributed,
+            "precision": cfg.precision,
             "model_revision": cfg.model_revision,
             "heads": [h.to_dict() for h in heads],
         },
@@ -664,6 +680,7 @@ def train_multi_head(
     seed: Optional[int] = None,
     resume: Optional[str] = None,
     trial: Optional[dict[str, Any]] = None,
+    progress_file: Optional[str | Path] = None,
 ) -> MultiHeadResult:
     """Train a multi-head classifier from a ``ModelDefinition``."""
     from transformers import AutoTokenizer
@@ -687,71 +704,70 @@ def train_multi_head(
         resume=resume,
         trial=trial,
     )
+    reporter = JobProgressReporter(
+        resolve_progress_file(progress_file),
+        run_id=run.run_id,
+        artifact_uri=str(out_dir),
+    )
+    stop_controller = TrainingStopController()
 
     ds_cfg = get_dataset_cfg(model_def)
     request_field = ds_cfg.get("request_field") or ds_cfg.get("raw_field") or "request"
     target_field = ds_cfg.get("target_field") or "target"
 
     # From here on the run record exists, so every failure (tokenizer load,
-    # unreadable split, unmappable labels) must mark it `aborted`.
+    # unreadable split, unmappable labels) must mark it `aborted` or `interrupted`.
     try:
-        text_transform = None
-        transform_name = ds_cfg.get("text_transform")
-        if transform_name:
-            text_transform = TRANSFORMS.require(str(transform_name))
+        with stop_controller.installed():
+            reporter.update(stage="train")
+            text_transform = None
+            transform_name = ds_cfg.get("text_transform")
+            if transform_name:
+                text_transform = TRANSFORMS.require(str(transform_name))
 
-        resolved_tokenizer = (
-            Path(tokenizer_path)
-            if tokenizer_path
-            else (model_def.resolve(ds_cfg["tokenizer"]) if ds_cfg.get("tokenizer") else None)
-        )
-        if resolved_tokenizer and resolved_tokenizer.exists():
-            from transformers import PreTrainedTokenizerFast
-
-            specials = _default_special_tokens(resolved_tokenizer)
-            tokenizer: Any = PreTrainedTokenizerFast(
-                tokenizer_file=str(resolved_tokenizer),
-                model_max_length=cfg.max_input_tokens,
-                **specials,
+            resolved_tokenizer = (
+                Path(tokenizer_path)
+                if tokenizer_path
+                else (model_def.resolve(ds_cfg["tokenizer"]) if ds_cfg.get("tokenizer") else None)
             )
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
+            if resolved_tokenizer and resolved_tokenizer.exists():
+                from transformers import PreTrainedTokenizerFast
 
-        train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
-        val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
-        if limit is not None:
-            train_rows = train_rows[:limit]
-            val_rows = val_rows[: max(2, limit // 4)]
-        if not train_rows:
-            raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
+                specials = _default_special_tokens(resolved_tokenizer)
+                tokenizer: Any = PreTrainedTokenizerFast(
+                    tokenizer_file=str(resolved_tokenizer),
+                    model_max_length=cfg.max_input_tokens,
+                    **specials,
+                )
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, revision=cfg.model_revision)
 
-        unknown = scan_label_coverage(train_rows + val_rows, heads, target_field=target_field)
-        if unknown:
-            detail = "; ".join(f"{head}: {counts}" for head, counts in sorted(unknown.items()))
-            raise ValueError(
-                "gold values do not map to the declared head labels "
-                f"({detail}). Fix training.heads[].labels or the corpus; these "
-                "rows would otherwise train as class 0 / 'none'."
+            train_rows = list(iter_jsonl(dataset_dir / "train.jsonl"))
+            val_rows = list(iter_jsonl(dataset_dir / "val.jsonl"))
+            if limit is not None:
+                train_rows = train_rows[:limit]
+                val_rows = val_rows[: max(2, limit // 4)]
+            if not train_rows:
+                raise ValueError(f"No training rows in {dataset_dir / 'train.jsonl'}")
+
+            unknown = scan_label_coverage(train_rows + val_rows, heads, target_field=target_field)
+            if unknown:
+                detail = "; ".join(f"{head}: {counts}" for head, counts in sorted(unknown.items()))
+                raise ValueError(
+                    "gold values do not map to the declared head labels "
+                    f"({detail}). Fix training.heads[].labels or the corpus; these "
+                    "rows would otherwise train as class 0 / 'none'."
+                )
+
+            head_names = [h.name for h in heads]
+            print(  # noqa: T201  training progress goes to stdout
+                f"multi_head: run={run.run_id} model={cfg.model_id} heads={head_names} "
+                f"train={len(train_rows)} val={len(val_rows)} "
+                f"max_len={cfg.max_input_tokens} epochs={cfg.epochs}"
             )
 
-        print(  # noqa: T201  training progress goes to stdout
-            f"multi_head: run={run.run_id} model={cfg.model_id} heads={[h.name for h in heads]} "
-            f"train={len(train_rows)} val={len(val_rows)} "
-            f"max_len={cfg.max_input_tokens} epochs={cfg.epochs}"
-        )
-
-        train_ds = _build_dataset(
-            train_rows,
-            tokenizer,
-            cfg.max_input_tokens,
-            heads,
-            request_field=request_field,
-            target_field=target_field,
-            text_transform=text_transform,
-        )
-        val_ds = (
-            _build_dataset(
-                val_rows,
+            train_ds = _build_dataset(
+                train_rows,
                 tokenizer,
                 cfg.max_input_tokens,
                 heads,
@@ -759,31 +775,49 @@ def train_multi_head(
                 target_field=target_field,
                 text_transform=text_transform,
             )
-            if val_rows
-            else None
-        )
+            val_ds = (
+                _build_dataset(
+                    val_rows,
+                    tokenizer,
+                    cfg.max_input_tokens,
+                    heads,
+                    request_field=request_field,
+                    target_field=target_field,
+                    text_transform=text_transform,
+                )
+                if val_rows
+                else None
+            )
 
-        report_to = normalize_report_to(training_dict.get("report_to"))
-        result = _train_loop(
-            cfg,
-            train_ds,
-            val_ds,
-            out_dir,
-            tokenizer,
-            heads=heads,
-            profile=profile,
-            embedding_strategy=training_dict.get("embedding_strategy"),
-            model_def=model_def,
-            dataset_dir=dataset_dir,
-            smoke=smoke,
-            device_name=str(target_device),
-            run_id=run.run_id,
-            report_to=report_to,
-            resume_from_checkpoint=str(resume_path) if resume_path else None,
-            distributed=distributed,
-        )
-        finish_run(model_def, run.run_id, "completed", metrics=result.metrics)
-        return result
-    except Exception as exc:
-        finish_run(model_def, run.run_id, "aborted", error=str(exc))
+            report_to = normalize_report_to(training_dict.get("report_to"))
+            result = _train_loop(
+                cfg,
+                train_ds,
+                val_ds,
+                out_dir,
+                tokenizer,
+                heads=heads,
+                profile=profile,
+                embedding_strategy=training_dict.get("embedding_strategy"),
+                model_def=model_def,
+                dataset_dir=dataset_dir,
+                smoke=smoke,
+                device_name=str(target_device),
+                run_id=run.run_id,
+                report_to=report_to,
+                resume_from_checkpoint=str(resume_path) if resume_path else None,
+                distributed=distributed,
+                stop_controller=stop_controller,
+                progress_reporter=reporter,
+            )
+            finish_run(model_def, run.run_id, "completed", metrics=result.metrics)
+            reporter.update(stage="completed")
+            return result
+    except TrainingInterrupted as exc:
+        reporter.update(stage="interrupted")
+        finish_run(model_def, run.run_id, "interrupted", error=str(exc))
+        raise
+    except (Exception, KeyboardInterrupt) as exc:
+        reporter.update(stage="failed")
+        finish_run(model_def, run.run_id, "aborted", error=str(exc) or type(exc).__name__)
         raise

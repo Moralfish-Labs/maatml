@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,35 @@ from maatml.utils.chat import (
 )
 
 SPEC = {"system": "", "user_template": "<<USER_REQUEST>>"}
+
+
+@dataclass(frozen=True)
+class TemplateMarkers:
+    """Literal tags a supervised span is checked against, per template family."""
+
+    family: str
+    call_open: str
+    turn_open: str
+    span_ends: tuple[str, ...]
+
+
+# A span ends where generation stops: at the turn end, or, for Gemma 4, at the
+# <|tool_response> stop token that hands control to the tool.
+KNOWN_MARKERS = (
+    TemplateMarkers("chatml", "<tool_call>", "<|im_start|>", ("<|im_end|>\n",)),
+    TemplateMarkers("gemma4", "<|tool_call>", "<|turn>", ("<|tool_response>", "<turn|>\n")),
+)
+
+
+def template_markers(tokenizer: Any) -> TemplateMarkers | None:
+    """The marker set whose tags the tokenizer's chat template writes, if any."""
+    template = getattr(tokenizer, "chat_template", None) or ""
+    if isinstance(template, dict):
+        template = "".join(str(t) for t in template.values())
+    for markers in KNOWN_MARKERS:
+        if markers.call_open in template and markers.turn_open in template:
+            return markers
+    return None
 
 
 def legacy_example(row: dict, tokenizer: Any) -> dict[str, list[int]]:
@@ -107,7 +137,14 @@ def main() -> int:
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, local_files_only=True)
-    report: dict[str, Any] = {"tokenizer": args.tokenizer, "files": {}}
+    markers = template_markers(tokenizer)
+    report: dict[str, Any] = {
+        "tokenizer": args.tokenizer,
+        "template_family": markers.family if markers else None,
+        "files": {},
+    }
+    if markers is None:
+        print("note: unknown chat template family; tag checks are skipped", file=sys.stderr)
     exit_code = 0
     for path in args.rows:
         rows = [
@@ -155,11 +192,15 @@ def main() -> int:
             if stray:
                 failures.append(f"{sid}: {len(stray)} labels outside the located spans")
             for idx, s, e in ex["spans"]:
+                if markers is None:
+                    stats["tag_checks_skipped"] += 1
+                    continue
                 piece = tokenizer.decode(ex["input_ids"][s:e], skip_special_tokens=False)
                 msg = messages[idx]
-                if msg.get("tool_calls") and piece.count("<tool_call>") != len(msg["tool_calls"]):
+                calls = msg.get("tool_calls") or []
+                if calls and piece.count(markers.call_open) != len(calls):
                     failures.append(f"{sid} turn {idx}: tool_call blocks do not match the calls")
-                if "<|im_start|>" in piece or not piece.endswith("<|im_end|>\n"):
+                if markers.turn_open in piece or not piece.endswith(markers.span_ends):
                     failures.append(f"{sid} turn {idx}: span leaks past its turn")
             turns, short = header_parity(row, tokenizer)
             stats["turns_without_full_generation_prompt"] += short

@@ -58,6 +58,31 @@ does not import it.
 > use `maatml validate --no-plugins` to check schema and paths without importing
 > plugin code.
 
+## Per-prediction evidence
+
+A predictor may implement `prediction_context(row) -> dict` to expose host-side
+observations, such as retrieval receipts, separately from its generated text.
+The evaluation harness calls it immediately after `predict(row)` and snapshots
+finite JSON values. This hook requires `batch_size: 1`; a batched predictor with
+the hook is rejected before generation because a single last-result trace cannot
+unambiguously describe a batch.
+
+A validator explicitly opts in with a named `prediction_context` parameter:
+
+```python
+def validate(text, *, user_prompt=None, schema_path=None, prediction_context=None):
+    # Validate the answer against observed evidence, not row-supplied claims.
+    ...
+```
+
+Existing validator signatures remain supported. Accepting `**kwargs` alone does
+not opt in. The validator receives its own copy; mutations do not overwrite the
+snapshot available to metrics as `RowEval.prediction_context` or saved beside
+the output in `evaluate --cache`. This top-level cache field is distinct from
+any similarly named field inside the original dataset row. Missing context is
+an empty dictionary, not proof of successful retrieval. Task plugins remain
+responsible for checking receipt identity, grounding and answer correctness.
+
 ## Generators (`maatml datagen`)
 
 A generator is a factory:
@@ -119,9 +144,30 @@ Core stays the only writer, so a hook cannot half-create a folder. Ship the
 same schema and prompt spec your validator and generator were written against:
 a lookalike copy makes `maatml datagen` reject every row it generates.
 
+## Processor-aware SFT trainers
+
+A plugin-owned trainer can reuse `maatml.training.sft_base.train_sft` with
+`data_collator_factory=MyCollator`. The factory receives `(model_def, processor,
+training_config)` and returns a callable over raw prepared rows. This opts into
+revision-pinned `AutoProcessor` and `AutoModelForImageTextToText` loading. The
+plugin owns media decoding, asset hash verification, assistant loss masks,
+padding and expanded-token budget checks. Media rows bypass the text token cache.
+
+The shared Trainer still owns optimization, resume, callbacks and run records.
+It receives the processor as `processing_class`, preserving processor assets in
+intermediate and final saves. `training.frozen_module_prefixes` optionally names
+model submodules that must remain frozen: trainable parameters or changed tensor
+bytes, including persistent buffers, abort the run. Hashes are recorded in final
+run metadata. Submodule paths must exist before LoRA is attached; freezing and
+correct target selection remain the trainer's responsibility.
+
+A plugin-owned architecture can register an exporter name that delegates to a
+shared exporter, as other plugin formats do. Register an explicit name for GGUF;
+the built-in `gguf` format remains restricted to its supported architectures.
+
 ## Exporters (`maatml export`)
 
-Built-ins: `safetensors`, `gguf` / `mlx` (optional tooling). The vision example
+Built-ins: `safetensors`, `adapter`, `gguf` / `mlx` (optional tooling). The vision example
 registers `onnx` / `vision_onnx` from its plugin. Custom:
 
 ```python

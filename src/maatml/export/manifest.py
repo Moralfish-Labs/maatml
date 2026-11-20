@@ -77,6 +77,25 @@ def read_safetensors_tensor_names(path: str | Path) -> list[str]:
     return [key for key in header if key != "__metadata__"]
 
 
+def read_safetensors_shapes(path: str | Path) -> dict[str, list[int]]:
+    """Return every tensor's shape in a ``.safetensors`` file, by name.
+
+    Header-only read; returns ``{}`` for anything it cannot parse.
+    """
+    header = _read_safetensors_header(path)
+    if header is None:
+        return {}
+    shapes: dict[str, list[int]] = {}
+    for key, spec in header.items():
+        if key == "__metadata__":
+            continue
+        shape = spec.get("shape") if isinstance(spec, dict) else None
+        if not isinstance(shape, list) or not all(isinstance(d, int) for d in shape):
+            return {}
+        shapes[key] = list(shape)
+    return shapes
+
+
 def _observed_weights_dtype(files: list[Path]) -> tuple[Optional[str], list[str]]:
     """Most-common tensor dtype across exported safetensors, and the full set.
 
@@ -257,15 +276,22 @@ def load_manifest(path: str | Path) -> tuple[Path, dict[str, Any]]:
 
 
 def verify_manifest(path: str | Path) -> list[str]:
-    """Recompute sha256 for listed files; return a list of mismatch messages.
+    """Recompute sha256 for listed files and flag unlisted files under the bundle root.
 
-    Empty list means OK. Missing files are reported as mismatches.
+    Empty list means OK. Missing, mismatched, or unlisted files are reported as
+    errors.
     """
-    root, data = load_manifest(path)
+    resolved = Path(path).resolve()
+    root, data = load_manifest(resolved)
+    manifest_file = resolved / "manifest.json" if resolved.is_dir() else resolved
+    manifest_rel = manifest_file.relative_to(root).as_posix()
+
     files = data.get("files") or []
     errors: list[str] = []
     if not isinstance(files, list):
         return ["manifest.files must be a list"]
+
+    listed: set[str] = set()
     for entry in files:
         if not isinstance(entry, dict):
             errors.append(f"invalid file entry: {entry!r}")
@@ -275,6 +301,8 @@ def verify_manifest(path: str | Path) -> list[str]:
         if not rel or not expected:
             errors.append(f"incomplete file entry: {entry!r}")
             continue
+        norm_rel = Path(rel).as_posix()
+        listed.add(norm_rel)
         target = root / rel
         if not target.is_file():
             errors.append(f"missing file: {rel}")
@@ -282,4 +310,13 @@ def verify_manifest(path: str | Path) -> list[str]:
         actual = sha256_file(target)
         if actual != expected:
             errors.append(f"checksum mismatch: {rel} (expected {expected}, got {actual})")
+
+    for candidate in sorted(root.rglob("*")):
+        if not candidate.is_file() and not candidate.is_symlink():
+            continue
+        rel = candidate.relative_to(root).as_posix()
+        if rel == manifest_rel:
+            continue
+        if rel not in listed:
+            errors.append(f"unlisted file: {rel}")
     return errors

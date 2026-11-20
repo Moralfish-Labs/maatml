@@ -6,6 +6,7 @@ import importlib
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -137,12 +138,20 @@ def export_gguf(
     run_id: Optional[str] = None,
 ) -> Path:
     """Export safetensors bundle first, then attempt GGUF conversion."""
+    gguf_cfg = (model_def.extensions or {}).get("gguf", {})
+    if not isinstance(gguf_cfg, dict):
+        raise ValueError("extensions.gguf must be a mapping")
+    mmproj = gguf_cfg.get("mmproj", False)
+    if type(mmproj) is not bool:
+        raise ValueError("extensions.gguf.mmproj must be a boolean")
+    script = _find_convert_script(model_def)
+    if mmproj and script is None:
+        raise ValueError("Multimodal GGUF export requires an explicit convert_script")
     out_dir = Path(out_dir).resolve()
     # Always materialise a HF-compatible directory first.
     export_safetensors_bundle(model_def, checkpoint_dir, out_dir, run_id=run_id)
 
     gguf_path = out_dir / f"{model_def.name}.gguf"
-    script = _find_convert_script(model_def)
     converted = False
     if script is not None:
         cmd = [sys.executable, str(script), str(out_dir), "--outfile", str(gguf_path)]
@@ -158,6 +167,28 @@ def export_gguf(
 
     if not converted:
         raise ImportError(_INSTALL_HINT)
+
+    if mmproj:
+        with tempfile.TemporaryDirectory(dir=out_dir) as temporary:
+            companion = Path(temporary) / f"mmproj-{model_def.name}.gguf"
+            cmd = [
+                sys.executable,
+                str(script),
+                str(out_dir),
+                "--mmproj",
+                "--outtype",
+                "f16",
+                "--outfile",
+                str(companion),
+            ]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                detail = getattr(exc, "stderr", "") or str(exc)
+                raise RuntimeError(f"Multimodal GGUF conversion failed: {detail}") from exc
+            if not companion.is_file() or companion.stat().st_size == 0:
+                raise RuntimeError("Multimodal GGUF conversion produced no companion")
+            companion.replace(out_dir / companion.name)
 
     _quantize(model_def, gguf_path, out_dir)
 

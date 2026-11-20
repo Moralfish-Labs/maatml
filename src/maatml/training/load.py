@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ..device import DeviceProfile, ensure_quantization_allowed, resolve_load_dtype
+from ..device import (
+    DeviceProfile,
+    ensure_quantization_allowed,
+    is_distributed,
+    local_rank,
+    resolve_load_dtype,
+)
 
 
 def _dtype_name_to_torch(name: str) -> Any:
@@ -66,6 +72,7 @@ def from_pretrained_kwargs(
     quantization: Optional[dict[str, Any] | Any] = None,
     revision: Optional[str] = None,
     frozen_base: bool = False,
+    distributed: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Keyword args shared by causal / seq2seq / encoder ``from_pretrained``.
 
@@ -78,12 +85,14 @@ def from_pretrained_kwargs(
         ensure_quantization_allowed(profile)
         qcfg = build_bitsandbytes_config(quantization)
         kwargs["quantization_config"] = qcfg
-        # Device map lets bitsandbytes place layers; HF Trainer still owns the loop.
-        kwargs.setdefault("device_map", "auto")
+        is_dist = is_distributed() if distributed is None else bool(distributed)
+        # Under torchrun/DDP, bind each rank to its own local GPU instead of
+        # sharding with device_map="auto" across all visible GPUs.
+        kwargs.setdefault("device_map", {"": f"cuda:{local_rank()}"} if is_dist else "auto")
     else:
         dtype = resolve_load_dtype(profile, precision, frozen_base=frozen_base)
         if dtype is not None:
-            kwargs["torch_dtype"] = dtype
+            kwargs["dtype"] = dtype
     if attn_implementation:
         kwargs["attn_implementation"] = attn_implementation
     if revision:

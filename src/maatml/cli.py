@@ -8,7 +8,7 @@ Outputs land under ``<model-dir>/output/`` (gitignored).
   maatml train     <model-dir> [--smoke] [--resume auto|PATH] [--set K=V]
   maatml sweep     <model-dir> --param K=a,b [--metric NAME] [--smoke]
   maatml evaluate  <model-dir> [--checkpoint X] [--split test] [--gate] [--set K=V]
-  maatml export    <model-dir> [--checkpoint X] [--format gguf|mlx|safetensors|onnx]
+  maatml export    <model-dir> [--checkpoint X] [--format gguf|mlx|safetensors|adapter|onnx]
   maatml compile   <export-dir> --target NAME --out DIR [--option K=V]
   maatml verify    <export-dir-or-manifest>
   maatml manifest  amend <export-dir> <files...> [--format NAME]
@@ -24,6 +24,7 @@ Outputs land under ``<model-dir>/output/`` (gitignored).
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -41,6 +42,7 @@ from .overrides import (
     parse_override,
     pick_metric,
 )
+from .progress import resolve_progress_file
 from .registry import (
     FORMATS,
     TRAINERS,
@@ -51,6 +53,7 @@ from .registry import (
 )
 from .runs import list_runs, resolve_checkpoint
 from .scaffold import normalize_architecture, scaffold_model, validate_model_dir
+from .training.signals import TrainingInterrupted
 
 # MPS unsupported-op fallback to CPU; harmless on non-Mac.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -224,6 +227,11 @@ def cmd_train(
         "--resume",
         help="Resume training: 'auto' (latest incomplete run) or checkpoint path/run_id",
     ),
+    progress_file: Optional[Path] = typer.Option(
+        None,
+        "--progress-file",
+        help="Write atomic JobProgress JSON snapshots to this path",
+    ),
     set_overrides: Optional[list[str]] = typer.Option(
         None,
         "--set",
@@ -242,8 +250,33 @@ def cmd_train(
     trainer = TRAINERS.get(md.architecture) or TRAINERS.require(arch)
     from .training.selection import render_selection, select_checkpoint
 
+    resolved_progress = resolve_progress_file(progress_file)
+    extra_kwargs: dict[str, Any] = {}
+    if resolved_progress is not None:
+        try:
+            params = inspect.signature(trainer).parameters
+            accepts_progress = "progress_file" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            accepts_progress = False
+        if accepts_progress:
+            extra_kwargs["progress_file"] = resolved_progress
+
     if seeds is None:
-        result = trainer(md, smoke=smoke, limit=limit, device=device, seed=seed, resume=resume)
+        try:
+            result = trainer(
+                md,
+                smoke=smoke,
+                limit=limit,
+                device=device,
+                seed=seed,
+                resume=resume,
+                **extra_kwargs,
+            )
+        except TrainingInterrupted as exc:
+            console.print(f"[yellow]interrupted[/] {exc}")
+            raise typer.Exit(code=128 + exc.signum) from exc
         console.print(f"[green]done[/] out_dir={result.out_dir} metrics={result.metrics}")
         selection = select_checkpoint(md, Path(result.out_dir).name, device=device, smoke=smoke)
         if selection:
@@ -388,6 +421,11 @@ def cmd_sweep(
 @app.command("evaluate")
 def cmd_evaluate(
     model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Report and prediction-cache directory; defaults to output/eval/",
+    ),
     checkpoint: Optional[str] = typer.Option(
         None,
         "--checkpoint",
@@ -487,6 +525,7 @@ def cmd_evaluate(
             force=force,
             overrides=applied or None,
             batch_size=batch_size,
+            out_dir=out,
         )
     except GateConfigError as exc:
         raise typer.BadParameter(str(exc), param_hint="evaluation") from exc
@@ -546,7 +585,7 @@ def cmd_export(
     format: Optional[str] = typer.Option(
         None,
         "--format",
-        help="safetensors (default) | gguf | mlx | onnx (plugin-registered)",
+        help="safetensors (default) | gguf | mlx | adapter | onnx (plugin-registered)",
     ),
     out: Optional[Path] = typer.Option(
         None,
@@ -875,13 +914,19 @@ def cmd_ship_check(
         tiers=tiers,
         max_regression=max_regression,
         replayed=replayed,
+        gates_benchmark=md.evaluation.get("gates_benchmark"),
         candidate_label=candidate,
         baseline_label=baseline,
     )
     if as_json:
         import json as _json
 
-        console.print(_json.dumps(verdict.as_dict(), indent=2, sort_keys=True))
+        console.print(
+            _json.dumps(verdict.as_dict(), indent=2, sort_keys=True),
+            soft_wrap=True,
+            markup=False,
+            highlight=False,
+        )
     else:
         for line in render_verdict(verdict):
             console.print(line)
@@ -1327,6 +1372,44 @@ def cmd_mint(
         )
 
 
+@app.command("snapshot")
+def cmd_snapshot(
+    model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    started_after: Path = typer.Option(..., exists=True, dir_okay=False),
+    writer_lock: Path = typer.Option(...),
+    min_step: int = typer.Option(..., min=1),
+    out: Path = typer.Option(...),
+    compress_level: int = typer.Option(
+        1,
+        "--compress-level",
+        min=0,
+        max=9,
+        help="Gzip compression level for the snapshot archive (0-9, default 1)",
+    ),
+) -> None:
+    """Wait for and snapshot a complete policy checkpoint for external backup.
+
+    Requires the policy trainer's training_state.pt completion protocol. Does
+    not stop training, upload data, deserialize optimizer state or weaken gates.
+    """
+    from .portable import BundleError
+    from .snapshot import snapshot_checkpoint
+
+    try:
+        result = snapshot_checkpoint(
+            load_model_def(model_dir),
+            started_after=started_after,
+            writer_lock=writer_lock,
+            min_step=min_step,
+            out=out,
+            compresslevel=compress_level,
+        )
+    except (BundleError, OSError, ValueError) as exc:
+        console.print(f"[red]snapshot refused[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]snapshot ready[/] {result}")
+
+
 @app.command("runs")
 def cmd_runs(
     model_dir: Path = typer.Argument(..., exists=True, file_okay=False),
@@ -1528,6 +1611,8 @@ def _lifecycle_options(
     seed: Optional[int],
     limit: Optional[int],
     export_format: Optional[str],
+    resume: Optional[str] = None,
+    progress_file: Optional[Path] = None,
 ):
     from .lifecycle import RunOptions
 
@@ -1540,6 +1625,8 @@ def _lifecycle_options(
         seed=seed,
         limit=limit,
         export_format=export_format,
+        resume=resume,
+        progress_file=progress_file,
     )
 
 
@@ -1562,6 +1649,16 @@ def cmd_run(
     limit: Optional[int] = typer.Option(None, "--limit"),
     export_format: Optional[str] = typer.Option(
         None, "--format", help="Export format (default safetensors)"
+    ),
+    resume: Optional[str] = typer.Option(
+        None,
+        "--resume",
+        help="Resume training: 'auto' (latest incomplete run) or checkpoint path/run_id",
+    ),
+    progress_file: Optional[Path] = typer.Option(
+        None,
+        "--progress-file",
+        help="Write atomic JobProgress JSON snapshots to this path",
     ),
     set_overrides: Optional[list[str]] = typer.Option(
         None, "--set", help="Override model.yml (repeatable); feeds the fingerprint"
@@ -1594,7 +1691,16 @@ def cmd_run(
     )
 
     options = _lifecycle_options(
-        smoke, device, force, from_step, until_step, seed, limit, export_format
+        smoke,
+        device,
+        force,
+        from_step,
+        until_step,
+        seed,
+        limit,
+        export_format,
+        resume=resume,
+        progress_file=resolve_progress_file(progress_file),
     )
     # A bad step name is a usage error; a config the run cannot use is a
     # refusal. Both are reported before any step runs, and before a dry run
@@ -1624,6 +1730,7 @@ def cmd_run(
         eval_report=report,
         limit=limit,
         seed=seed,
+        resume=resume,
     )
 
     if dry_run:
@@ -1631,7 +1738,13 @@ def cmd_run(
         return
 
     def _on_step(name: str, status: str, detail: str) -> None:
-        colour = {"running": "cyan", "ran": "green", "skipped": "dim", "failed": "red"}
+        colour = {
+            "running": "cyan",
+            "ran": "green",
+            "skipped": "dim",
+            "interrupted": "yellow",
+            "failed": "red",
+        }
         console.print(f"[{colour.get(status, 'white')}]{status:>8}[/] {name}  {detail}")
 
     result = run_pipeline(md, options, on_step=_on_step)
@@ -1840,6 +1953,7 @@ def cmd_plugins() -> None:
     # Import submodule directly so listing plugins does not require torch.
     from . import servers as _servers  # noqa: F401
     from .evaluation import predictors as _predictors  # noqa: F401
+    from .export import adapter as _adapter  # noqa: F401
     from .export import bundle as _bundle  # noqa: F401
     from .export import gguf as _gguf  # noqa: F401
     from .export import mlx_export as _mlx  # noqa: F401
