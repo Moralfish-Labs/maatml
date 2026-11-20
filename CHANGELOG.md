@@ -36,6 +36,48 @@ for the Python package and per-model versions under `examples/`.
   reference checkpoint, supporting multi-seed runs (`training.seeds`), and
   enforcing held-out non-regression plus task-completion gain promotion
   checks (`evaluate_grpo_promotion`), compatible with the `trl>=0.9` floor.
+- Graceful training interruption. The trainers handle `SIGTERM` and `SIGINT`:
+  the first signal inside the training loop saves a checkpoint and stops, a
+  second one raises `TrainingInterrupted` at once, and a signal outside the loop
+  raises it at once. The run record gets the new `interrupted` status, which
+  `--resume auto` treats as resumable like `running`. `maatml train` exits with
+  `128 + signal number`, and `maatml run` reports the step as `interrupted`
+  rather than `failed`.
+- `maatml run --resume` passes a run id, checkpoint path or `auto` to the train
+  step. It stops with an error when the architecture's trainer does not accept
+  `resume`.
+- `--progress-file` on `maatml train` and `maatml run`, or the
+  `FLOW_JOB_PROGRESS_FILE` environment variable, writes atomic `JobProgress`
+  JSON snapshots (stage, epoch, step, run id and one headline metric) for an
+  orchestrator to read. A trainer that does not take `progress_file` is run without it.
+- SFT trainer options `training.save_strategy` (`no`, `steps` or `epoch`),
+  `save_only_model`, `optim`, `lr_scheduler_type`, `lr_scheduler_kwargs` and
+  `max_grad_norm`. `checkpoint_snapshots` is refused together with
+  `save_strategy: "no"` or `save_only_model: true`, because a snapshot needs the
+  training state.
+- `maatml snapshot --compress-level` (0-9, default 1) sets the gzip level of the
+  snapshot archive.
+- Parser for Gemma 4 tool calls in generated text, including nested objects,
+  arrays and quoted strings, alongside the existing tool-call shapes.
+
+### Changed
+
+- Evaluation predictors resolve precision from the run metadata first, then the
+  evaluation spec, then the model definition, and choose the torch dtype from
+  the device. They load an adapter's base model at the `model_revision` from the
+  run metadata, the spec or the model definition, fall back
+  to the image-text model class when the causal class rejects a multimodal
+  checkpoint, and generate in left-padded batches with an attention mask. The
+  seq2seq predictor batches as well.
+- Quantized loads under `torchrun` or other distributed launches place each
+  rank on its own `cuda:<LOCAL_RANK>` device instead of sharding the model
+  across every visible GPU with `device_map="auto"`.
+- `maatml verify` also reports a file under the bundle that the manifest does
+  not list (`unlisted file`), besides missing and mismatched files.
+- Checkpoint snapshots and `maatml snapshot` accept sharded safetensors weights
+  (`model.safetensors.index.json` with every listed shard present) as well as a
+  single `model.safetensors`. Shard names that are not plain safetensors file
+  names are rejected.
 
 ## [0.18.0] - 2026-11-12
 
