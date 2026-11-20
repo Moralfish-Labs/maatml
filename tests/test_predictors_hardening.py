@@ -88,7 +88,7 @@ def test_resolve_base_revision_and_image_text_detection(tmp_path: Path) -> None:
 
 
 def test_load_causal_or_image_text_falls_back_on_value_error(monkeypatch) -> None:
-    import transformers
+    transformers = pytest.importorskip("transformers")
 
     calls: list[tuple[str, object, dict]] = []
 

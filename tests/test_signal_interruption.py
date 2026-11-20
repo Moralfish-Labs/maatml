@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import signal
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,7 +50,7 @@ def test_stop_controller_defers_first_signal_in_train_loop_and_restores_handler(
     with ctrl.installed():
         assert signal.getsignal(signal.SIGTERM) != prev_term
         with ctrl.training_loop():
-            os.kill(os.getpid(), signal.SIGTERM)
+            signal.raise_signal(signal.SIGTERM)
             assert ctrl.stop_requested is True
             assert ctrl.signum == signal.SIGTERM
             cb.on_step_end(None, None, control)
@@ -59,7 +58,7 @@ def test_stop_controller_defers_first_signal_in_train_loop_and_restores_handler(
             assert control.should_training_stop is True
             # Second signal inside training loop raises immediately.
             with pytest.raises(TrainingInterrupted) as exc_info:
-                os.kill(os.getpid(), signal.SIGTERM)
+                signal.raise_signal(signal.SIGTERM)
             assert exc_info.value.signum == signal.SIGTERM
 
     assert signal.getsignal(signal.SIGTERM) == prev_term
@@ -70,7 +69,7 @@ def test_stop_controller_defers_first_signal_in_train_loop_and_restores_handler(
 def test_stop_controller_raises_immediately_outside_training_loop() -> None:
     ctrl = TrainingStopController()
     with ctrl.installed(), pytest.raises(TrainingInterrupted) as exc_info:
-        os.kill(os.getpid(), signal.SIGTERM)
+        signal.raise_signal(signal.SIGTERM)
     assert exc_info.value.signum == signal.SIGTERM
 
 
@@ -90,6 +89,8 @@ def test_finish_run_interrupted_is_resumable(tmp_path: Path) -> None:
 
 
 def test_trainers_mark_run_interrupted_on_training_interrupted(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
     from maatml.training import multi_head, preference, seq2seq, sft_base
 
     # 1. sft_base
@@ -223,7 +224,7 @@ def test_real_cpu_sft_sigterm_flushes_checkpoint_and_marks_interrupted(
         loss = orig_step(self, *args, **kwargs)
         if not fired:
             fired = True
-            os.kill(os.getpid(), signal.SIGTERM)
+            signal.raise_signal(signal.SIGTERM)
         return loss
 
     monkeypatch.setattr(sft_base.Trainer, "training_step", _step_then_sigterm)
