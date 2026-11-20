@@ -392,6 +392,7 @@ _BUILTIN_PLUGIN_MODULES = (
     "maatml.data.image_folder",
     "maatml.data.preference",
     "maatml.evaluation.predictors",
+    "maatml.evaluation.served",
     "maatml.export.bundle",
     "maatml.export.adapter",
     "maatml.export.gguf",
