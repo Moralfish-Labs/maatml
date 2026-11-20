@@ -8,6 +8,25 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-20
+
+### Documentation
+
+- Refreshed `README.md`, `mkdocs.yml`, `AGENTS.md`, `ROADMAP.md`, all MkDocs
+  user guides (`docs/*.md`), and bundled agent skill references
+  (`docs/skill/`) for the `0.15.0` through `0.19.0` capabilities: served-model
+  parity (`served_http` / `serve_parity`), reasoning-span loss masking
+  (`training.reasoning_loss`), free-text rollouts (`free_text` / `step_text` /
+  `arithmetic_world`), `filtered_imitation`, environment-verified `grpo`,
+  structured progress reporting (`--progress-file` / `FLOW_JOB_PROGRESS_FILE`),
+  graceful `SIGTERM`/`SIGINT` checkpoint flushing (`interrupted` run status),
+  `run --resume`, `maatml snapshot` live backups (`training.checkpoint_snapshots`
+  and sharded checkpoints), `verify` unlisted-file detection, spec-checked
+  `export --format adapter`, multimodal GGUF companions
+  (`extensions.gguf.mmproj`), regex `training.lora.target_modules`,
+  `training.frozen_module_prefixes`, `RowTooLongError`, `dataset.train_samples`,
+  and Gemma 4 tool-call parsing.
+
 ## [0.19.0] - 2026-11-20
 
 ### Added
