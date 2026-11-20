@@ -33,6 +33,8 @@ maatml run          # prepare is stale, so the loop retrains
 | nothing but a contract | `datagen` |
 | prompts, but no labels | `distill` |
 | rows from somewhere else | `ingest` |
+| reviewed corrective rows to add without moving test splits | `dataset.train_samples` |
+| verified free-text rollout episodes | `rollout` + `filtered_imitation` / `grpo` |
 | candidate completions to rank | `mint` |
 | real traffic worth learning from | `serve --capture`, then review, then `ingest` |
 
@@ -40,7 +42,7 @@ maatml run          # prepare is stale, so the loop retrains
 
 Runs a registered generator (or a teacher) and keeps only rows the validator
 accepts. It **fails closed** when no validator is configured unless you pass
-`--allow-ungated` — ungated synthetic data teaches a contract nobody checks.
+`--allow-ungated`; ungated synthetic data teaches a contract nobody checks.
 
 ## `distill`: label a prompt pool
 
@@ -55,14 +57,14 @@ maatml distill <model-dir> --replay      # reproduce the corpus offline, no netw
 
 Accepted rows carry provenance (teacher model and revision, prompt hash, source,
 family); rejections are kept in a report next to the corpus, which is worth
-reading — a cluster of identical rejections is usually a briefing problem, not a
-teacher problem.
+reading, because a cluster of identical rejections is usually a briefing
+problem, not a teacher problem.
 
 Responses are cached on prompt hash **plus teacher model and revision**, so
 `--replay` reproduces exactly the same accepted corpus and a different teacher
 never silently reuses another's labels. The cache's first line is a
-provenance header — teacher, every prompt pool it labelled (by sha256), and
-the benchmark version current when it was recorded — and the distill card
+provenance header (teacher, every prompt pool it labelled by sha256, and
+the benchmark version current when it was recorded) and the distill card
 repeats it.
 
 `distill` refuses a pool that overlaps a held-out population before any
@@ -73,9 +75,9 @@ a memorised answer to a question the benchmark asks. Fix the pool; the
 held-out manifests are not prompt sources.
 
 The teacher is any OpenAI-compatible endpoint, named by
-`MAATML_TEACHER_BASE_URL` and `MAATML_TEACHER_API_KEY` — so serving one locally
-is a base URL, not a code path. Export credentials in the process environment; MaatML does not automatically
-load a `.env` file. Do not commit credentials.
+`MAATML_TEACHER_BASE_URL` and `MAATML_TEACHER_API_KEY`, so serving one locally
+is a base URL, not a code path. Export credentials in the process environment;
+MaatML does not automatically load a `.env` file. Do not commit credentials.
 
 Configure it in `model.yml` under `distill:` rather than on the command line, so
 the run record can say what labelled the corpus. See `model-yml.md`, especially
@@ -92,6 +94,15 @@ gold targets when a validator is configured. It also guards the capture loop: a
 with ffmpeg into `datasets/samples/images/` and sets the request field to each
 PNG. Core does not parse MEVA KPF or COCO VID; a plugin writes the sidecar.
 
+## Corrective train-only rows (`dataset.train_samples`)
+
+For `jsonl_seed`, place reviewed corrective examples in `dataset.train_samples`
+rather than editing `seed_samples`. They join `train` after seed splitting,
+refuse collisions with held-out groups, run isolation and attribution checks,
+and are recorded in `corpus.lock.json`. For large corpora, `prepare_stream`
+processes rows incrementally and preserves the previous prepared splits if
+preparation is refused.
+
 ## `mint`: preference pairs
 
 Turns candidate completions into `{prompt, chosen, rejected}` pairs for DPO or
@@ -103,17 +114,18 @@ maatml mint <dpo-model-dir> --input candidates.jsonl
 ```
 
 So a minted pair means "this completion passes the contract and that one does
-not" — not a hand-labelled guess. Input is JSONL of
+not", not a hand-labelled guess. Input is JSONL of
 `{prompt, candidates: [completion, ...]}`; pairs append stamped `source: mint`.
 
 Preference training needs volume and balance. A hundred approvals against nine
 declines is too thin and too imbalanced to mint from; filtering supervised
-training to approved actions is the better use of that signal.
+training to approved actions (or `filtered_imitation` over verified rollout
+episodes) is the better use of that signal.
 
 ## Reviewed capture
 
 `maatml serve --capture` records real traffic. A captured prediction is **not**
-training data — it is a proposal a human or teacher must correct and approve.
+training data; it is a proposal a human or teacher must correct and approve.
 
 ```bash
 maatml serve <model-dir> --auth-token "$TOKEN" --capture captures.jsonl

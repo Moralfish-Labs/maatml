@@ -24,7 +24,8 @@ reimplement trainers, gates, or run records.
 maatml validate /workspace/models/my-task
 maatml audit /workspace/models/my-task
 maatml plan /workspace/models/my-task
-maatml run /workspace/models/my-task --device cuda
+maatml run /workspace/models/my-task --device cuda \
+  --progress-file /workspace/progress.json
 ```
 
 `validate`, `audit` and `plan` do not train. `run` can spend compute: it walks
@@ -38,6 +39,44 @@ input hashes, seed and benchmark. Preserve these with the run's evidence.
 Smoke checks establish pipeline operation; their gate evidence is marked as
 smoke-tier and does not establish production quality.
 
+## Structured progress reporting
+
+Pass `--progress-file PATH` to `maatml train` or `maatml run`, or export
+`FLOW_JOB_PROGRESS_FILE=PATH` in the job environment. MaatML writes atomic
+camelCase `JobProgress` JSON snapshots from rank 0 only (so multi-GPU ranks
+never race on the target file):
+
+```json
+{
+  "checkpointAgeSecs": 42,
+  "epoch": 1,
+  "heartbeatAt": "2026-11-20T16:00:00Z",
+  "metricName": "loss",
+  "metricValue": 0.412,
+  "runId": "20261120-154500-my-task",
+  "stage": "train",
+  "step": 250
+}
+```
+
+Supervisors can poll this file directly for heartbeats, active stage
+(`prepare`, `train`, `checkpoint`, `evaluate`, `export`, `verify`), step,
+latest finite metric, checkpoint age and `artifactUri` without scraping
+terminal output. Set `training.disable_tqdm: true` and `PYTHONUNBUFFERED=1`
+alongside `--progress-file` when streaming stdout logs.
+
+## Signal handling and clean interruption
+
+`TrainingStopController` coordinates `SIGTERM` and `SIGINT` across training
+runs:
+
+- Inside the training loop, the first `SIGTERM` or `SIGINT` requests a deferred
+  stop so the Trainer flushes a checkpoint at the step boundary, exits cleanly
+  and records run status `interrupted` in `output/runs.jsonl`.
+- A second signal interrupts immediately.
+- Outside the training loop (during model load or setup), `SIGTERM` interrupts
+  immediately so startup cannot hang until an orchestrator kill timeout.
+
 ## Resume an interrupted trainer
 
 Recovery requires the trainer's checkpoint state, not just exported weights.
@@ -49,21 +88,49 @@ scheduler, scaler and progress state as applicable.
 ```bash
 maatml train /workspace/models/my-task --device cuda --seed 44 \
   --resume /workspace/models/my-task/output/checkpoints/RUN_ID/checkpoint-33000
+
+# Or resume through the fixed lifecycle runner:
+maatml run /workspace/models/my-task --device cuda --resume auto \
+  --progress-file /workspace/progress.json
 ```
 
 `RUN_ID` and `checkpoint-33000` are placeholders for a verified checkpoint.
 For an exact recovery request, choose an explicit path rather than `auto`,
-which selects a checkpoint. Verify recipe and data compatibility before launch
-and confirm the restored step in the trainer log. Do not silently replace a
-missing checkpoint with fresh training or infer successful continuation from
-the absence of errors. Exact stochastic replay depends on the trainer's saved
+which selects the latest incomplete (`running` or `interrupted`) run carrying a
+saved checkpoint. Verify recipe and data compatibility before launch and
+confirm the restored step in the trainer log. Do not silently replace a missing
+checkpoint with fresh training or infer successful continuation from the
+absence of errors. Exact stochastic replay depends on the trainer's saved
 state; `--resume` alone is not a universal bit-for-bit guarantee.
 
-A remote snapshot used for recovery must retain mid-run checkpoints.
+## Live checkpoint snapshots
+
+A remote snapshot used for recovery must retain complete mid-run checkpoints.
 `runs --pack` omits nested `checkpoint-*` directories by default;
-`--with-checkpoints` includes them. Neither option establishes that a live
-checkpoint is complete. Preserve a consistent recovery snapshot and confirm
-trainer state before resuming.
+`--with-checkpoints` includes them, and neither option establishes that a live
+checkpoint is complete while training is still writing.
+
+For live backups on POSIX hosts, enable `training.checkpoint_snapshots: true`
+for single-process SFT runs (which writes a hash-bound
+`maatml-checkpoint-ready.json` marker after `on_save`, supporting both
+single-file and sharded safetensors weights) or use a policy trainer that
+writes `training_state.pt` last, then run `maatml snapshot` alongside training:
+
+```bash
+maatml snapshot /workspace/models/my-task \
+  --started-after /workspace/launch.marker \
+  --writer-lock /workspace/train.lock \
+  --min-step 200 \
+  --out /workspace/backups/ckpt-200.tar.gz \
+  --compress-level 1
+```
+
+`maatml snapshot` waits for a complete checkpoint at or after `--min-step`,
+copies and verifies the files before archiving (so concurrent checkpoint
+pruning cannot yield a torn archive), and writes the portable bundle atomically
+at gzip level 1 by default for fast backups inside billed shutdown windows. It
+never stops training, uploads data, deserializes optimizer state or weakens
+gates. Snapshots require POSIX writer locks and are refused on Windows.
 
 ## Bring a completed run home
 

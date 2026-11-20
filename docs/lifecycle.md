@@ -98,11 +98,12 @@ what "correct enough to ship" means; only the checks change.
 
 ```bash
 maatml prepare   <model-dir>   # build train/val/test splits
-maatml train     <model-dir>   # fine-tune (LoRA/QLoRA/full/DPO/ORPO/vision/VLM)
-maatml evaluate  <model-dir> --gate   # score and enforce gates
+maatml train     <model-dir>   # fine-tune (LoRA/QLoRA/full/DPO/ORPO/filtered_imitation/grpo/vision/VLM)
+maatml evaluate  <model-dir> --gate   # score and enforce gates (local or served_http)
 maatml export    <model-dir>   # safetensors/gguf/mlx/adapter/onnx + manifest.json
-maatml verify    <export-dir>  # sha256 check vs manifest
+maatml verify    <export-dir>  # sha256 + unlisted-file check vs manifest
 maatml serve     <model-dir>   # JSON inference API (validator inline)
+maatml snapshot  <model-dir>   # capture a complete mid-run checkpoint backup
 maatml audit     [model-dir]   # environment + model-folder health check
 ```
 
@@ -148,8 +149,10 @@ that is precisely what makes `prepare` stale on the next run. See
 [the data flywheel](flywheel.md) for how each one gates what it adds.
 
 `--from` / `--until` restrict the walk, `--force` re-runs everything selected,
-and `--set` overrides feed the fingerprint (an invalid one exits non-zero
-before any step runs and leaves `output/pipeline.json` untouched).
+`--resume auto|PATH` continues an interrupted training stage, `--progress-file
+PATH` writes atomic `JobProgress` snapshots for supervisors, and `--set`
+overrides feed the fingerprint (an invalid one exits non-zero before any step
+runs and leaves `output/pipeline.json` untouched).
 
 ### Smoke-tier gates
 
@@ -177,7 +180,9 @@ rehearsal floor loose enough for a broken model cannot be cleared by one.
 Causal SFT rows can carry `messages`, per-row `tools`, and
 `chat_template_kwargs`. Assistant messages preserve `tool_calls`; tool-result
 messages preserve their role, name and call ID. The template receives the same
-tool definitions during training and prediction.
+tool definitions during training and prediction, and the built-in `causal_sft`
+predictor parses both ChatML `<tool_call>...</tool_call>` and Gemma 4
+`<|tool_call>...</tool_call|>` blocks back through `parse_tool_calls`.
 
 Every assistant turn is supervised, including tool calls. System messages,
 user messages, tool results and the tool-definition preamble are masked from
@@ -185,10 +190,54 @@ the loss. The trainer locates assistant spans in the complete rendered chat
 and checks their token decoding, including templates that render intermediate
 assistant turns differently from the final turn. If a tool row cannot be
 matched exactly, training rejects it rather than accepting shifted labels.
+Rows rendering to more tokens than `training.max_input_tokens` raise
+`RowTooLongError` before the first step rather than truncating the system
+prompt or tool declarations from the left.
 
 `scripts/check_chat_masks.py --help` describes the offline masking check using
-a cached tokenizer. Tool-call chat training is available in 0.14.0 and later;
-upgrade older installations before using it.
+a cached tokenizer; it reads tool-call and turn-end tags from the tokenizer's
+chat template (ChatML or Gemma 4) automatically.
+
+## Reasoning-span loss masking
+
+When assistant training targets include chain-of-thought blocks,
+`training.reasoning_loss` controls whether tokens inside closed reasoning spans
+contribute to the causal SFT loss:
+
+| Mode | Effect on assistant loss |
+| --- | --- |
+| `include` (default) | Supervise the full assistant turn, reasoning blocks and answer/tool tokens alike. |
+| `mask` | Mask tokens inside closed reasoning blocks (`-100`) and supervise only the final answer and tool-call tokens. |
+| `reasoning_only` | Supervise only tokens inside closed reasoning blocks and mask answer/tool tokens. |
+
+Recognized delimiters are `<think>...</think>`, `<thought>...</thought>`,
+`<|thought|>...<|/thought|>`, and Gemma 4 `<|channel>thought...<channel|>`.
+Spans are aligned back to token offsets; unclosed tags are left untouched so
+malformed text never silently masks an answer. Changing `reasoning_loss`
+changes the tokenized cache key automatically.
+
+## Verified-output post-training
+
+Beyond supervised fine-tuning (`causal_sft`, `seq2seq`, `vlm_sft`,
+`vision_multitask`, `diffusion_lora`) and offline preference optimization
+(`dpo`, `orpo`), MaatML 0.19.0 ships two environment-verified post-training
+trainers backed by the `maatml.rollout_env/1` protocol (see
+[Rollouts](rollouts.md)):
+
+- **`filtered_imitation`**: reads collected rollout episodes (via
+  `extensions.filtered_imitation.episodes_path` or `episodes.jsonl` under the
+  prepared directory), keeps strictly trajectories verified as successful by
+  the environment (`outcome.success == True`), blocks split leakage against
+  held-out splits (`exclude_splits`), deduplicates by `(task_id, trace_digest)`,
+  optionally mixes prepared seed rows (`mix_seed_train`), writes provenance to
+  `filtered_imitation_manifest.json`, and hands off to the shared SFT trainer.
+- **`grpo`**: runs Group-Relative Policy Optimization where every completion is
+  scored exclusively inside a `free_text` rollout environment via
+  `EnvironmentRewardBridge` (never by the learner). Updates regularize KL
+  divergence against a frozen `anchor_checkpoint` (or step-0 base snapshot),
+  support multi-seed studies (`training.seeds`), work with the existing
+  `trl>=0.9` dependency floor, and pair with `evaluate_grpo_promotion` to
+  require held-out non-regression alongside a strict task-completion gain.
 
 ## What each stage refuses to do quietly
 
@@ -204,25 +253,35 @@ upgrade older installations before using it.
   those rows are split individually with a warning: group-level leakage
   protection does not apply to them. An empty split is reported, and a
   `benchmark_samples` row sharing a group key with the training splits is an
-  error, because a benchmark is pinned to test. With `dataset.isolation`
-  declared it refuses to write splits that violate the policy; with
-  `dataset.attribution` declared it refuses a row whose source is unlisted,
-  unsigned, blocked, or non-commercial without a signed risk acceptance; and
-  an in-place edit of `benchmark_samples` is refused, because a benchmark is
-  versioned by file.
+  error, because a benchmark is pinned to test. `dataset.train_samples` rows
+  enter train after seed splitting and are refused if they collide with a
+  held-out group. With `dataset.isolation` declared it refuses to write splits
+  that violate the policy; with `dataset.attribution` declared it refuses a row
+  whose source is unlisted, unsigned, blocked, or non-commercial without a
+  signed risk acceptance; and an in-place edit of `benchmark_samples` is
+  refused, because a benchmark is versioned by file.
 - `distill` refuses a prompt pool that overlaps `benchmark_samples`,
   `blind_samples`, the prepared val / test split, or a pinned group, before
   any teacher call.
 - `train` fails on gold labels no head declares, on a seq2seq corpus with no
-  targets, and on an unsupported `training.precision`. Any failure marks the
-  run `aborted` in `runs.jsonl`.
+  targets, on an unsupported `training.precision`, on causal SFT rows exceeding
+  `training.max_input_tokens` (`RowTooLongError`), and on trainable parameters or
+  changed tensor bytes under `training.frozen_module_prefixes`. Process signals
+  (`SIGTERM` / `SIGINT`) flush a checkpoint inside the training loop and record
+  status `interrupted`; other failures mark the run `aborted` in `runs.jsonl`.
 - `evaluate` uses `packaging.max_input_tokens` as its token budget (the same
   budget serve and `export --parity` enforce) and records how many inputs it
   truncated. Per-class output is a pass rate with its sample count, not a
   confusion matrix. Floors derived on another split are reported as a
-  population mismatch (refused under `--strict-population`); `--blind` is
-  refused on a candidate that has no current production gate pass or has
-  already spent the blind population.
+  population mismatch (refused under `--strict-population` before loading the
+  predictor); `--blind` is refused on a candidate that has no current
+  production gate pass or has already spent the blind population.
+- `export` refuses `adapter` exports whose rank, tensor names or shapes depart
+  from `extensions.adapter.spec` without writing output, and fails GGUF exports
+  if an opted-in multimodal companion (`extensions.gguf.mmproj: true`) fails or
+  is missing.
+- `verify` fails on missing files, checksum mismatches, and unlisted files
+  present under the export directory.
 - `runs --adopt` refuses a bundle packed under another `model.yml` or identity,
   and any file whose hash differs from the bundle's manifest.
 - `sweep` records a failed trial and keeps going, then exits non-zero. It ranks

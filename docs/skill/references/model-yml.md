@@ -43,6 +43,7 @@ dataset:
   format: jsonl_seed            # a registered format adapter
   seed: 7                       # the split is deterministic; changing this reshuffles it
   seed_samples: datasets/samples/seed_samples.jsonl
+  train_samples: datasets/samples/corrections.jsonl   # optional: train-only corrective rows
   benchmark_samples: datasets/samples/benchmark_samples.jsonl
   schema: datasets/schema.json        # handed to the validator
   prompt_spec: datasets/prompt_spec.json
@@ -54,10 +55,15 @@ dataset:
   sanitize: []                  # registered sanitizers, run before training
 ```
 
+`train_samples` (for `jsonl_seed`) admits reviewed corrective examples into
+`train` after seed splitting, checks held-out group collisions, runs isolation
+and attribution checks, and enters `corpus.lock.json` without shifting the seed
+split assignment.
+
 **`group_by` is leakage protection, and choosing it wrongly is the classic
 mistake.** All rows sharing the key land in the same split, so paraphrases of
 one situation cannot straddle train and test. Group by the *situation*
-(`scenario`), not by the *contract* (`family`) — a family key sends every row of
+(`scenario`), not by the *contract* (`family`); a family key sends every row of
 a family into one split, which is both useless as a split and confusing later,
 because `family` usually also names the contract a row is graded under.
 
@@ -93,7 +99,7 @@ The blind manifest is checked for leakage but never written into a split.
 Every prepare writes `output/prepared/benchmark.json`: the **benchmark
 version** (an order-insensitive hash of the test rows plus the pins), which
 eval reports carry as `extras.benchmark_version`. Editing `benchmark_samples`
-under the same filename is refused — write the rows to a new file and point
+under the same filename is refused; write the rows to a new file and point
 the key at it, so floors keep naming the population they came from.
 
 `maatml evaluate --blind` spends the blind manifest once per frozen candidate:
@@ -124,15 +130,15 @@ with long headers and extra columns parses as it is:
 ```markdown
 | source     | licence   | commercial-use | provenance/consent | attribution         | sign-off                           |
 | ---        | ---       | ---            | ---                | ---                 | ---                                |
-| meva       | CC BY 4.0 | yes            | consented actors   | © Kitware and IARPA | cleared — A. Name 2026-08-17       |
-| crowdhuman | research  | no             | third-party photos | CrowdHuman          | accepted-risk — A. Name 2026-08-17 |
-| dukemtmc   | withdrawn | no             | non-consented      | —                   | do not use                         |
+| meva       | CC BY 4.0 | yes            | consented actors   | (c) Kitware / IARPA | cleared - A. Name 2026-08-17       |
+| crowdhuman | research  | no             | third-party photos | CrowdHuman          | accepted-risk - A. Name 2026-08-17 |
+| dukemtmc   | withdrawn | no             | non-consented      | none                | do not use                         |
 ```
 
 `source`, `licence` (or `license`), `commercial-use` and `sign-off` are
 required; `provenance` / `consent` and `attribution` are read when present.
-`commercial-use` is read from the start of the cell — `yes`, `no`, anything
-else is `unknown` — so a hedge like `unknown until filtered` stays unknown.
+`commercial-use` is read from the start of the cell (`yes`, `no`, anything
+else is `unknown`), so a hedge like `unknown until filtered` stays unknown.
 The table is keyed on each row's `source` unless `attribution_field` names
 another field: a corpus whose `source` is finer than its licence (one value
 per annotation file, `benchmark:holdout` for pinned rows) keys the table on
@@ -149,14 +155,15 @@ benchmark and blind) and refuses to write splits when:
   accepted risk.
 
 Risk is accepted in the table, not on the command line: a sign-off such as
-`accepted-risk — A. Name 2026-08-17` admits a `no` / `unknown` source and is
+`accepted-risk - A. Name 2026-08-17` admits a `no` / `unknown` source and is
 recorded against it in the corpus lock, so the acceptance carries a name and
 a date rather than a flag nobody can trace later. A blocked row is never
 admitted by an acceptance.
 
-Every prepare — with or without a table — writes
+Every prepare (with or without a table) writes
 `output/prepared/corpus.lock.json`: each input file by path, sha256 and row
-count, the table rows the corpus actually used with their row counts, the
+count, supporting input assets (prompt specs, schemas, tool files) by sha256,
+the table rows the corpus actually used with their row counts, the
 risk accepted, and a `lock_sha256` over all of it. `maatml export` copies the
 lock into `manifest.json` as `corpus_lock`, and when it names sources the
 bundle also ships an `ATTRIBUTION.md` rendered from those rows (listed in the
@@ -271,7 +278,7 @@ question is how far below, decided by something other than taste.
 A round number cannot answer it: 0.90 is trivially clearable for a metric
 measured on 414 rows and unreachable in practice for one measured on 16.
 
-Wald — the normal approximation, `p̂ ± z·sqrt(p̂(1-p̂)/n)` — answers it wrongly at
+Wald (the normal approximation, `p̂ ± z·sqrt(p̂(1-p̂)/n)`) answers it wrongly at
 exactly the rates a good model produces. At a perfect rate `p̂(1-p̂)` is zero, so
 the interval collapses and the "lower bound" is 1.000. These are real
 measurements from one multi-family model, chosen because the denominators span
@@ -292,7 +299,7 @@ live.
 
 Wilson inverts the score test instead, so it stays inside [0,1], behaves at 0
 and 1, and keeps coverage near nominal at small n. It is also closed-form
-arithmetic — a floor can be checked in a spreadsheet, which matters for a number
+arithmetic; a floor can be checked in a spreadsheet, which matters for a number
 committed to a file as an auditable claim.
 
 ```python
@@ -309,14 +316,14 @@ def wilson(k, n, z=1.96):
 
 The property that earns it: the slack is set by the evidence. `n` perfect rows
 give a floor of 0.722 at n=10, 0.886 at n=30, 0.963 at n=100 and 0.990 at
-n=400 — so the gate tightens as the benchmark grows, with nobody editing it.
+n=400, so the gate tightens as the benchmark grows, with nobody editing it.
 That is also the arithmetic reason an aggregate is treacherous: pooled over
 everything it has a huge denominator, so its floor sits tight against its
 observation while the small families it averages over carry floors twenty points
 loose.
 
 Clopper-Pearson, the exact binomial, guarantees *at least* 95% coverage and is
-therefore systematically wider — floors lower than the evidence warrants, which
+therefore systematically wider: floors lower than the evidence warrants, which
 lets real regressions through. Wilson trades that guarantee for calibration.
 
 ### The caveat these floors carry
@@ -327,13 +334,13 @@ can be below the row count, so row-level bounds can overstate the
 evidence. The size of that effect depends on the correlation. Twenty-seven rows drawn from nine scenarios is weaker evidence
 than twenty-seven unrelated ones.
 
-This does not change the choice — every alternative assumes the same thing — but
+This does not change the choice (every alternative assumes the same thing), but
 it does mean a floor derived from a small, heavily grouped family should be read
 as approximate, and that widening the *variety* of a benchmark buys more than
 adding paraphrases to it.
 
-`evaluate` uses `packaging.max_input_tokens` as its token budget — the same
-budget `serve` and `export --parity` enforce — and records how many inputs it
+`evaluate` uses `packaging.max_input_tokens` as its token budget (the same
+budget `serve` and `export --parity` enforce) and records how many inputs it
 truncated. If that count is not zero, the measurement is of a truncated
 population.
 
@@ -349,11 +356,21 @@ training:
   epochs: 6
   eval_steps: 20
   save_steps: 100
+  save_strategy: steps        # steps | epoch | no
+  save_only_model: false
+  checkpoint_snapshots: false # true publishes hash-bound readiness markers for `maatml snapshot`
   logging_steps: 5
+  disable_tqdm: false         # true replaces progress bars with plain Trainer log records
+  optim: adamw_torch
+  lr_scheduler_type: linear
+  lr_scheduler_kwargs: null
+  max_grad_norm: 1.0
   warmup_ratio: 0.03
   weight_decay: 0.0
   precision: bf16
   grad_checkpointing: true
+  reasoning_loss: include     # include | mask | reasoning_only
+  frozen_module_prefixes: []  # submodule paths that must stay frozen and unchanged
   seed: 7
   generation:
     max_new_tokens: 4096      # the ceiling evaluation generates under
@@ -362,8 +379,42 @@ training:
     r: 16
     alpha: 32
     dropout: 0.05
-    save_mode: adapter        # adapter | merged
+    save_mode: adapter        # adapter | merged | both
     target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+```
+
+`reasoning_loss` controls whether tokens inside closed reasoning blocks
+(`<think>...</think>`, `<thought>...</thought>`,
+`<|thought|>...<|/thought|>`, Gemma 4 `<|channel>thought...<channel|>`)
+contribute to causal SFT loss: `include` supervises the whole assistant turn,
+`mask` masks reasoning blocks (`-100`) to supervise only answer and tool-call
+tokens, and `reasoning_only` supervises only reasoning blocks. Changing
+`reasoning_loss` isolates the tokenized cache key automatically.
+
+### GRPO training (`architecture: grpo`)
+
+For environment-verified GRPO (`GRPOTrainConfig`), `training:` configures the
+environment, rollout group, anchor KL regularization, and promotion guard:
+
+```yaml
+architecture: grpo
+training:
+  model_id: Qwen/Qwen3-0.6B
+  anchor_checkpoint: null        # defaults to frozen step-0 snapshot of model_id
+  environment: arithmetic_world  # registered environment name or stdio argv list
+  environment_options: {}
+  task_query: {count: 64, seed: 7}
+  group_size: 4                  # >= 2 completions scored per task
+  kl_beta: 0.04
+  clip_eps: 0.2
+  max_input_tokens: 2048
+  max_new_tokens: 256
+  temperature: 0.8
+  top_p: 0.95
+  learning_rate: 1.0e-5
+  seeds: null                    # optional list of >= 2 seeds for seed-study GRPO
+  min_completion_gain: 0.0
+  max_heldout_regression: 0.0
 ```
 
 ### Selecting the checkpoint
@@ -384,7 +435,7 @@ run id resolves to that checkpoint for evaluate, export and serve, while
 evidence is still recorded against the run. The per-candidate reports live
 under `output/eval/select/<run>/`; the test split is never read. A metric the
 harness does not report is an error, not a silent fallback to the last
-checkpoint. `keep_checkpoints` is what makes the comparison worth anything —
+checkpoint. `keep_checkpoints` is what makes the comparison worth anything:
 at the default of 2 only the last two survive. A seed study records the
 selected value as `select:<metric>`.
 
@@ -438,11 +489,29 @@ extensions:
   adapter:
     name: my-adapter         # folder under adapters/; defaults to the model name
     spec: adapter-spec.json  # optional layout the adapter must match
+  serve_parity:
+    base_url: http://127.0.0.1:8081   # OpenAI-compatible server for served_http / serve_parity
+    model: null                       # optional model id (falls back to /v1/models)
+    export_dir: null                  # optional export dir for manifest SHA-256 + gate checks
+    artifact: null                    # artifact relpath inside export_dir
+    require_production_gate: true
+    verify_server_props: false
+    temperature: 0.0
+    seed: 0
+  filtered_imitation:
+    episodes_path: null               # defaults to output/prepared/episodes.jsonl
+    require_verified: true
+    min_reward: null
+    exclude_splits: [test, blind, held_out]
+    deduplicate: true
+    max_per_task: null
+    min_decisions: 1
+    mix_seed_train: false
 ```
 
 maatml never searches `PATH` for the llama.cpp convert script or quantize
-binary — that would execute whatever `convert.py` happened to be found first.
-Name them explicitly here or via `MAATML_LLAMA_CONVERT` /
+binary, because that would execute whatever `convert.py` happened to be found
+first. Name them explicitly here or via `MAATML_LLAMA_CONVERT` /
 `MAATML_LLAMA_QUANTIZE`, otherwise `--format gguf` produces no GGUF.
 
 Set `extensions.gguf.mmproj: true` to also invoke the explicit converter with
@@ -486,10 +555,11 @@ distill:
 ```
 
 `target_format` decides what a reply must be *before* the validator sees it.
-Default `json` parses and drops what will not parse — right when the target is a
-document. Set `text` when the target is not JSON (a sentence then a call object,
-a rendered patch): the raw reply goes to the validator instead. Left at `json`,
-such a label is refused as unparseable and the gate that decides never sees it.
+Default `json` parses and drops what will not parse, which is right when the
+target is a document. Set `text` when the target is not JSON (a sentence then a
+call object, a rendered patch): the raw reply goes to the validator instead.
+Left at `json`, such a label is refused as unparseable and the gate that decides
+never sees it.
 
 `teacher_revision` is part of the cache key, so a different teacher never
 silently reuses another's labels and `--replay` reproduces the accepted corpus
@@ -508,7 +578,7 @@ smoke:
 A rehearsal cannot meet production thresholds, and holding it to them only
 teaches people to ignore a red gate. `--smoke` enforces these instead, and the
 pass is recorded as smoke-gated in the run record and in the export manifest's
-`gate_evidence` — so a rehearsal never reads later as a production gate pass.
+`gate_evidence`, so a rehearsal never reads later as a production gate pass.
 
 `output_nonempty_rate` is always reported and is the honest thing for a smoke
 tier to gate on: it says the checkpoint saved, reloaded and produced output,
@@ -522,11 +592,11 @@ names, and at the smoke tier each one is a failing blocking gate
 (`pathology:<name>`), since a rehearsal floor is loose enough for a broken
 model to clear:
 
-- `never_fires` — no output on any row, or a recall-like metric at or below
+- `never_fires`: no output on any row, or a recall-like metric at or below
   0.01 while its precision counterpart is 0.9 or better (or absent): nothing
   is being predicted and precision is flattering it.
-- `identical_output` — the same non-empty output on every row.
-- `one_class` — every parsed output carries the same `class` / `category` /
+- `identical_output`: the same non-empty output on every row.
+- `one_class`: every parsed output carries the same `class` / `category` /
   `label` / `family` / `intent` / `kind` while the gold rows span two or more
   categories.
 

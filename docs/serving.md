@@ -198,6 +198,65 @@ export MAATML_VLLM_ENDPOINT=http://127.0.0.1:8000
 maatml evaluate examples/vision-vlm --gate
 ```
 
+## 4. Served-model parity (`served_http` / `serve_parity`)
+
+Before shipping an exported or quantized artifact (GGUF on `llama-server`, HF
+bundle on `vLLM`, or `maatml serve`), measure the **live served runtime** on
+the exact same rows, prompt spec, validator and metrics used for the training
+checkpoint. MaatML ships a torch-free HTTP predictor registered under both
+`served_http` and `serve_parity` (`maatml.evaluation.served.ServedModelPredictor`):
+
+```yaml
+evaluation:
+  predictor: served_http
+extensions:
+  serve_parity:
+    base_url: http://127.0.0.1:8081
+    model: my-model
+    export_dir: output/export/20261120-120000-my-model
+    artifact: model-Q5_K_M.gguf
+    verify_server_props: true
+    temperature: 0.0
+    seed: 0
+```
+
+Configuration resolves in priority order: explicit `setup(...)` kwargs,
+`extensions.serve_parity` (inline mapping or a `config:` JSON file path), then
+`MAATML_SERVE_PARITY_URL`, `MAATML_SERVE_PARITY_MODEL` and
+`MAATML_SERVE_PARITY_API_KEY`.
+
+- **Artifact provenance (`verify_served_artifact`)**: when `export_dir` and
+  `artifact` are set, setup checks that the served artifact exists, matches the
+  SHA-256 in `<export_dir>/manifest.json`, carries non-smoke passing production
+  `gate_evidence` (`require_production_gate: true` by default), and matches the
+  checkpoint `run_id`.
+- **Server identity (`probe_server_identity`)**: reads `/props` (checking
+  `expected_build_info` and `model_path` when verification is enabled) and
+  `/v1/models`, and records the binding and server identity in `report.extras`
+  under `serve_parity`.
+- **Tool-call preservation**: responses from `/v1/chat/completions` preserve
+  OpenAI `tool_calls` as `<tool_call>` JSON blocks so `parse_tool_calls` and
+  task validators grade the same shape as local checkpoints.
+- **Structured comparison (`compare_parity`)**: compares reference checkpoint
+  outputs against served outputs, returning exact match rate, JSON-normalized
+  equivalent match rate, optional validator pass rates for both sides, and
+  capped mismatch records (`ParityReport`).
+
+## 5. Adapter and multimodal GGUF exports
+
+- **Spec-checked LoRA adapter (`--format adapter`)**: reads a checkpoint saved
+  with `training.lora.save_mode: adapter` or `both` and writes
+  `adapters/<name>/adapter_config.json`,
+  `adapters/<name>/adapter_model.safetensors`, and `manifest.json` beside
+  `adapters/`. Always checks every `lora_A` / `lora_B` tensor rank from
+  safetensors headers (no torch or weight load required). Setting
+  `extensions.adapter.spec` enforces exact rank, tensor names and tensor shapes
+  before writing any files.
+- **Multimodal GGUF companion (`extensions.gguf.mmproj: true`)**: invokes the
+  configured explicit converter with `--mmproj --outtype f16` to emit
+  `mmproj-<name>.gguf`, lists it in `manifest.json`, and fails the export if
+  conversion fails or produces no companion.
+
 ## Adding files to an export
 
 If an external tool writes an additional artifact inside the export directory,
@@ -214,11 +273,12 @@ added artifact; evaluate the deployed representation separately.
 ## Verifying an export
 
 Every export writes a `manifest.json`. `maatml verify <export-dir>` recomputes
-the sha256 of each file listed in the manifest and checks it against the
-recorded value, so you can catch truncated, corrupted, or partially copied
-artifacts before you ship. This detects accidental corruption, not tampering:
-anyone who can rewrite a file can also recompute its hash in `manifest.json`, so
-treat `verify` as an integrity check, not a signature.
+the sha256 of each file listed in the manifest, checks for missing files, and
+flags any unlisted files present under the export directory, so you can catch
+truncated, corrupted, stray, or partially copied artifacts before you ship.
+This detects accidental corruption and unlisted additions, not tampering:
+anyone who can rewrite a file can also recompute its hash in `manifest.json`,
+so treat `verify` as an integrity check, not a signature.
 
 ```bash
 maatml export examples/support-ticket-triage/

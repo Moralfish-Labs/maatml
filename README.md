@@ -55,10 +55,10 @@ pip install "maatml[ml]"
 
 # Optional extras
 pip install "maatml[ml,cuda]"    # QLoRA on NVIDIA CUDA (bitsandbytes)
-pip install "maatml[ml,pref]"    # DPO / ORPO (TRL)
+pip install "maatml[ml,pref]"    # DPO / ORPO (TRL >= 0.9)
 pip install "maatml[ml,vision]"  # torchvision + ONNX (examples/vision)
 pip install "maatml[vllm]"       # Linux-only vLLM serving (examples/vision-vlm)
-pip install "maatml[teacher]"    # OpenAI-compatible teacher for datagen
+pip install "maatml[teacher]"    # OpenAI-compatible teacher for datagen / distill
 pip install "maatml[docs]"       # site tooling; also requires a source checkout
 ```
 
@@ -98,7 +98,9 @@ local device or cloud GPU, then export for the runtime your model supports.
 
 - **Complements** general fine-tuning tools (Axolotl, LLaMA-Factory, Unsloth,
   TRL) rather than competing on scale. Reach for those for large models,
-  multi-node training, RL, or broad model coverage.
+  multi-node training, large-scale RL, or broad model coverage. MaatML includes
+  supervised fine-tuning, DPO/ORPO, `filtered_imitation`, and
+  environment-verified `grpo` scoped to small task-specific models.
 - **Runs its own fixed lifecycle** (`prepare → train → evaluate → export →
   verify` / `serve`), as one command: `maatml run`, which skips steps that are
   already fresh and stops non-zero at the first failure. It is **not** a
@@ -128,29 +130,30 @@ line; `maatml --debug <command>` prints the traceback.
 
 | Command | What it does |
 | --- | --- |
-| `run` | The whole lifecycle in one command: prepare, train, evaluate (gated), export, verify. Skips steps that are already fresh |
-| `prepare` | Build `train`/`val`/`test` splits from the seed corpus; enforces `dataset.isolation` / `pins`, records the benchmark version and the corpus lock, checks source sign-offs when `dataset.attribution` is declared |
-| `train` | Fine-tune the model (`--smoke`, `--resume auto\|PATH`, `--set K=V`, `--seeds N`); `training.select_by` picks the checkpoint on val |
+| `run` | The whole lifecycle in one command: prepare, train, evaluate (gated), export, verify. Skips fresh steps; accepts `--resume auto\|PATH` and `--progress-file PATH` |
+| `prepare` | Build `train`/`val`/`test` splits from the seed corpus (plus optional `dataset.train_samples`); enforces `dataset.isolation` / `pins`, records the benchmark version and corpus lock (including supporting assets), and checks source sign-offs when `dataset.attribution` is declared |
+| `train` | Fine-tune the model (`causal_sft`, `seq2seq`, `multi_head_classifier`, `dpo`, `orpo`, `diffusion_lora`, `filtered_imitation`, `grpo`, or plugin architectures); supports `--smoke`, `--resume auto\|PATH`, `--progress-file PATH`, `--set K=V`, `--seeds N`; `training.select_by` picks the checkpoint on val |
 | `sweep` | Offline grid HPO over `--param K=a,b` |
-| `evaluate` | Score a checkpoint; `--gate` exits non-zero on a gate miss, `--cache` keeps per-row predictions, `--out DIR` separates reports from historical results, `--batch-size N` uses a predictor's `predict_batch` when available, `--set K=V` overrides configuration (never with `--gate`), `--blind` spends the blind manifest once, `--strict-population` refuses mismatched gate populations before inference. The token budget defaults to `packaging.max_input_tokens` |
+| `evaluate` | Score a local checkpoint or live OpenAI-compatible endpoint (`served_http` / `serve_parity`); `--gate` exits non-zero on a gate miss, `--cache` keeps per-row predictions and `prediction_context`, `--out DIR` separates reports from historical results, `--batch-size N` uses a predictor's `predict_batch` when available, `--set K=V` overrides configuration (never with `--gate`), `--blind` spends the blind manifest once, `--strict-population` refuses mismatched gate populations before loading the predictor. The token budget defaults to `packaging.max_input_tokens` |
 | `gates derive` | Floors from a run's report: Wilson 95 % at each metric's own denominator, cluster bootstrap from a cache, `--seed-study`; `--write` rewrites `evaluation.gates` with the derivation beside each floor |
 | `ship-check` | `CANDIDATE BASELINE`: absolute, delta and population verdict in one; `--replay` re-evaluates both over the current test split |
 | `operating-point derive` | Sweep the predictor's `rescore` over a val cache under a budget; `--write` the cut, `--confirm-on-test` spends test once |
-| `export` | Deployable bundle + `manifest.json` (`--format`, `--parity`) |
+| `export` | Deployable bundle + `manifest.json` (`--format safetensors\|gguf\|mlx\|adapter\|onnx`, `--parity`); `adapter` checks `extensions.adapter.spec`, `gguf` supports `extensions.gguf.mmproj` multimodal companions |
 | `compile` | Dispatch an export to a registered target compiler; `--require-gated` rejects missing, failed or smoke-tier gate evidence |
 | `manifest amend` | Add files inside an export to its checksummed manifest without changing gate evidence |
-| `verify` | Recompute sha256 of an export against its `manifest.json` |
-| `serve` | JSON inference API; `--enforce` (422), `--max-retries`, `--auth-token`, `--capture` |
+| `verify` | Recompute sha256 of listed manifest files and flag unlisted files under the export directory |
+| `serve` | JSON inference API (`http` default, or `anthropic` / plugin backends); `--enforce` (422), `--max-retries`, `--auth-token`, `--capture` |
+| `snapshot` | Wait for a complete policy or SFT checkpoint (`>= --min-step`) and write a gzip-compressed portable backup bundle without stopping training |
 | `datagen` | Validator-gated seed generation (`--teacher`, `--allow-ungated`) |
 | `distill` | Validator-gated teacher labels over a prompt pool (`--replay` offline) |
 | `mint` | Preference pairs (`chosen`/`rejected`) from validator-scored candidates |
-| `ingest` | Import external samples (`--map field=col`, `--sanitize tag`) |
+| `ingest` | Import external samples (`--map field=col`, `--sanitize tag`, `--video FILE`) |
 | `runs` | List recorded training runs (`--compare` tabulates their metrics); `--pack RUN` / `--adopt BUNDLE` carry a run, its evidence and its record between machines |
 | `report` | Runs, floors with their derivation, slices, pathologies, seed statistics and spends, regenerated from `output/` alone (`--format md\|csv`) |
 | `plan` | Show which lifecycle steps are stale (alias for `run --dry-run`) |
-| `plugins` | List registered trainers, validators, metrics, formats, generators, exporters, compilers, servers and environments |
+| `plugins` | List registered trainers, validators, metrics, predictors, formats, generators, exporters, compilers, servers and environments |
 | `audit` | Check the environment, plugins, and a model folder; exits 1 on problems |
-| `rollout` | Run a checkpoint in a verifying environment; `--label` collects teacher labels for DAgger, and `--teacher-mix` mixes teacher decisions |
+| `rollout` | Run a checkpoint in a verifying environment (candidate-ranking `line_world` or free-text `free_text` / `arithmetic_world`); `--label` collects teacher labels for DAgger, `--teacher-mix` mixes teacher decisions |
 | `scaffold` | Create a new model folder (`--architecture`, `--plugin`, `--force`) |
 | `validate` | Check `model.yml` and paths (`--no-plugins` skips plugin code) |
 
@@ -160,14 +163,28 @@ Multi-GPU (CUDA): `accelerate launch -m maatml.cli train <model-dir>/` or
 QLoRA (CUDA + `[cuda]`): set `training.quantization.load_in_4bit: true` in
 `model.yml`. Preference data: `dataset.format: preference_jsonl` with
 `{prompt, chosen, rejected}` rows; scaffold with `--architecture dpo`.
+Verified-output post-training: use `architecture: filtered_imitation` for
+environment-verified expert iteration, or `architecture: grpo` for
+environment-verified GRPO with a frozen anchor checkpoint KL penalty (see
+[Rollouts](docs/rollouts.md) and [Lifecycle](docs/lifecycle.md)).
 
-Export defaults to a safetensors bundle + `manifest.json`. GGUF/MLX need
-external tooling (`llama.cpp` convert / `mlx_lm`). Pin base-model revisions
-with `training.model_revision`.
+Export defaults to a safetensors bundle + `manifest.json`. `adapter` exports
+`adapters/<name>/` (`adapter_config.json` + `adapter_model.safetensors`) with
+header-only rank and optional `extensions.adapter.spec` shape checks. GGUF/MLX
+need external tooling (`llama.cpp` convert / `mlx_lm`), and
+`extensions.gguf.mmproj: true` emits an f16 `mmproj-<name>.gguf` multimodal
+companion. Pin base-model revisions with `training.model_revision`, confine LoRA
+to one tower with a regex `training.lora.target_modules`, and guard frozen
+submodules with `training.frozen_module_prefixes`.
 
-The causal SFT path also preserves per-row tool definitions,
-assistant tool calls and tool results. It supervises every assistant turn and
-masks the other roles; see [tool-call chat training](docs/lifecycle.md#tool-call-chat-training).
+The causal SFT path preserves per-row tool definitions, assistant tool calls
+(ChatML `<tool_call>` and Gemma 4 `<|tool_call>`), and tool results. It refuses
+rows exceeding `training.max_input_tokens` (`RowTooLongError`) instead of
+silently truncating prompts, supervises every assistant turn while masking other
+roles, and supports selective reasoning-span loss masking via
+`training.reasoning_loss: include | mask | reasoning_only`; see
+[tool-call chat training](docs/lifecycle.md#tool-call-chat-training) and
+[reasoning-span loss masking](docs/lifecycle.md#reasoning-span-loss-masking).
 
 Docs: [maatml.pages.dev](https://maatml.pages.dev) · Roadmap: [ROADMAP.md](ROADMAP.md) ·
 In-repo docs: `docs/` (from the repository root, `pip install -e ".[docs]"`
@@ -251,24 +268,40 @@ data, plugin, recipe, and any local base checkpoint before running:
 ```bash
 maatml validate <model-dir>
 maatml train <model-dir> --device cuda \
-  --set training.logging_steps=1 --set training.disable_tqdm=true
-# After an interruption, resume from a saved training checkpoint:
-maatml train <model-dir> --device cuda --resume auto \
+  --progress-file /tmp/progress.json \
+  --set training.logging_steps=1 --set training.disable_tqdm=true \
+  --set training.checkpoint_snapshots=true
+# Optionally back up a completed mid-run checkpoint while training continues:
+maatml snapshot <model-dir> --started-after /tmp/launch.marker \
+  --writer-lock /tmp/train.lock --min-step 200 --out /tmp/ckpt-200.tar.gz
+# After an interruption (SIGTERM/SIGINT flushes a checkpoint and records status="interrupted"):
+maatml run <model-dir> --device cuda --resume auto \
+  --progress-file /tmp/progress.json \
   --set training.logging_steps=1 --set training.disable_tqdm=true
 maatml evaluate <model-dir> --checkpoint RUN --cache --out <report-dir>
 maatml runs <model-dir> --pack RUN
 ```
 
-`disable_tqdm` replaces the SFT progress bar with ordinary Trainer log records;
-`logging_steps` controls their frequency. Evaluation prints row progress and
-estimated time remaining. Set `PYTHONUNBUFFERED=1` when an external orchestrator
-streams Python output. Resume requires a saved checkpoint; work since the last
-save may need to run again.
+`--progress-file` (or `FLOW_JOB_PROGRESS_FILE`) writes atomic `JobProgress` JSON
+snapshots (`heartbeatAt`, `stage`, `epoch`, `step`, `runId`, `metricName`,
+`metricValue`, `checkpointAgeSecs`) from rank 0 so supervisors can monitor
+progress without scraping logs. `disable_tqdm` replaces the SFT progress bar
+with ordinary Trainer log records; `logging_steps` controls their frequency.
+On `SIGTERM` or `SIGINT` inside the training loop, MaatML flushes a checkpoint
+at the step boundary and records run status `interrupted` in `runs.jsonl`.
+`training.checkpoint_snapshots: true` publishes a hash-bound completion marker
+beside each saved single-process SFT checkpoint (single-file or sharded) so
+`maatml snapshot` captures only complete checkpoints at gzip level 1.
+Evaluation prints row progress and estimated time remaining. Set
+`PYTHONUNBUFFERED=1` when an external orchestrator streams Python output.
+Resume requires a saved checkpoint; work since the last save may need to run
+again.
 
 The orchestrator provisions and stops the GPU, streams logs, and transfers
 checkpoints. On the receiving machine, `maatml runs <model-dir> --adopt BUNDLE`
 imports the completed run and its evidence. A completed training run does not
-by itself establish an acceptance or release pass.
+by itself establish an acceptance or release pass. See
+[orchestration and recovery](docs/orchestration.md).
 
 ## Batch scripts
 

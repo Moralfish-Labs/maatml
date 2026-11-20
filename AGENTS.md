@@ -36,20 +36,21 @@ mypy src/maatml --ignore-missing-imports
 .venv/bin/maatml scaffold ~/models/my-vision --architecture vision_multitask \
     --plugin examples/vision/vision_plugin   # plugin-owned architectures
 .venv/bin/maatml validate ~/models/my-task
-.venv/bin/maatml run      examples/<name>/ [--smoke] [--dry-run] [--force] [--from STEP] [--until STEP] [--set K=V]
+.venv/bin/maatml run      examples/<name>/ [--smoke] [--dry-run] [--force] [--from STEP] [--until STEP] [--resume auto|PATH] [--progress-file PATH] [--set K=V]
 .venv/bin/maatml prepare  examples/<name>/
-.venv/bin/maatml train    examples/<name>/ [--smoke] [--device mps|cpu|cuda] [--seed N] [--limit N] [--resume auto|PATH] [--set training.learning_rate=1e-4]
+.venv/bin/maatml train    examples/<name>/ [--smoke] [--device mps|cpu|cuda] [--seed N] [--seeds N] [--limit N] [--resume auto|PATH] [--progress-file PATH] [--set training.learning_rate=1e-4]
 .venv/bin/maatml sweep    examples/<name>/ --param training.learning_rate=1e-4,3e-4 --param training.lora.r=8,16 [--metric eval_loss] [--smoke] [--max-trials N]
-.venv/bin/maatml evaluate examples/<name>/ [--checkpoint X] [--split test|val] [--gate]
+.venv/bin/maatml evaluate examples/<name>/ [--checkpoint X] [--split test|val] [--gate] [--cache] [--out DIR] [--batch-size N] [--strict-population]
 .venv/bin/maatml export   examples/<name>/ [--checkpoint X] [--format safetensors|gguf|mlx|adapter|onnx] [--out PATH] [--parity]
 .venv/bin/maatml compile  <export-dir> --target NAME --out DIR [--option K=V] [--require-gated]
 .venv/bin/maatml verify   examples/<name>/output/export/<run_id>
-.venv/bin/maatml serve    examples/<name>/ [--server http|NAME] [--server-option K=V] [--enforce] [--max-retries N] [--auth-token T] [--capture PATH]
+.venv/bin/maatml serve    examples/<name>/ [--server http|anthropic|NAME] [--server-option K=V] [--enforce] [--max-retries N] [--auth-token T] [--capture PATH]
+.venv/bin/maatml snapshot examples/<name>/ --started-after FILE --writer-lock PATH --min-step N --out BUNDLE [--compress-level 1]
 .venv/bin/maatml datagen  examples/<name>/ [--target N] [--seed S] [--teacher] [--out PATH]
 .venv/bin/maatml distill  examples/<name>/ [--prompts PATH] [--replay] [--offline]
 .venv/bin/maatml mint     examples/<name>/ --input candidates.jsonl   # dpo/orpo pairs
 .venv/bin/maatml ingest   examples/<name>/ --input PATH [--map field=col] [--sanitize tag] [--append] [--video FILE]
-.venv/bin/maatml runs     examples/<name>/ [--compare] [--metric K] [--limit N]
+.venv/bin/maatml runs     examples/<name>/ [--compare] [--metric K] [--limit N] [--pack RUN] [--adopt BUNDLE]
 .venv/bin/maatml audit    [examples/<name>/] [--json]
 .venv/bin/maatml plugins
 .venv/bin/maatml rollout ~/models/my-policy --env line_world --tasks '{"count": 50, "seed": 1}' --label
@@ -69,7 +70,7 @@ torchrun --nproc_per_node=N -m maatml.cli train examples/<name>/
 .venv/bin/python examples/vision-describer/scripts/build_seeds.py --target 400
 ```
 
-See [ROADMAP.md](ROADMAP.md) for the 0.14.0 release boundary and
+See [ROADMAP.md](ROADMAP.md) for the **0.19.0** release boundary and
 planned tranches. See [docs/orchestration.md](docs/orchestration.md)
 for worker and checkpoint ownership; external orchestration stays outside core.
 
@@ -88,7 +89,9 @@ seed builders live under `examples/*/…_plugin/` and register via
 | `examples/vision-vlm/` | `vlm_sft` (SmolVLM LoRA; vLLM-servable) | SmolVLM-256M-Instruct |
 | `examples/vision-describer/` | `seq2seq` (vision JSON → short description) | flan-t5-small |
 
-Built-in architectures also include `dpo` / `orpo` (TRL preference; `maatml[pref]`).
+Built-in architectures also include `dpo` / `orpo` (TRL preference; `maatml[pref]`),
+`diffusion_lora`, `filtered_imitation` (verified-output expert iteration), and
+`grpo` (environment-verified GRPO with frozen anchor KL).
 
 **Standalone model folders.** Every path in `model.yml` resolves relative to
 the model folder via `ModelDefinition.resolve()`. Core never falls back to
@@ -102,13 +105,14 @@ semver (`0.1.0`); identity is `name@version`.
 ### Dispatch (registry)
 
 ```
-architecture → trainer registry (causal_sft / seq2seq / multi_head_classifier / dpo / orpo / vlm_sft / …)
-dataset.format → format registry (jsonl_seed / alpaca / sharegpt / preference_jsonl → prepare)
+architecture → trainer registry (causal_sft / seq2seq / multi_head_classifier / dpo / orpo / diffusion_lora / filtered_imitation / grpo / vlm_sft / …)
+dataset.format → format registry (jsonl_seed / alpaca / sharegpt / preference_jsonl / image_caption_folder → prepare)
 dataset.generator → generator registry (synthetic_scenes / described_scenes / custom → datagen)
-evaluation.validator / metrics / predictor → plugin registries
+evaluation.validator / metrics / predictor → plugin registries (built-in predictors include served_http / serve_parity)
 export --format → exporter registry (safetensors / gguf / mlx / adapter / onnx)
 compile --target → compiler registry (device-specific plans / packages)
-serve --server → server registry (http default; DeepStream / vLLM / … plugins)
+serve --server → server registry (http default, anthropic; DeepStream / vLLM / … plugins)
+rollout --env → environment registry (line_world / arithmetic_world / custom)
 ```
 
 `model.yml` may also list `plugins: [./triage_plugin]` for folder-local packages.

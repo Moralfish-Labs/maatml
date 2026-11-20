@@ -7,18 +7,18 @@ task semantics** and register them via decorators.
 
 | Kind | Decorator | Typical use |
 |------|-----------|-------------|
-| trainer | `@register_trainer` | Architecture training loop |
+| trainer | `@register_trainer` | Architecture training loop (built-ins: `causal_sft`, `seq2seq`, `multi_head_classifier`, `classifier`, `dpo`, `orpo`, `diffusion_lora`, `filtered_imitation`, `grpo`) |
 | validator | `@register_validator` | Out-of-model JSON / contract gate |
 | metrics | `@register_metrics` | Eval scoring |
-| predictor | `@register_predictor` | Checkpoint → text / structured output; optional `predict_batch(rows)` for batched evaluate |
-| format | `@register_format` | Dataset prepare adapters |
+| predictor | `@register_predictor` | Checkpoint or endpoint to text / structured output (built-ins include `causal_sft`, `seq2seq`, `multi_head_classifier`, `served_http`, `serve_parity`); optional `predict_batch(rows)` and `prediction_context(row)` |
+| format | `@register_format` | Dataset prepare adapters (`jsonl_seed`, `alpaca`, `sharegpt`, `preference_jsonl`, `image_caption_folder`) |
 | sanitizer | `@register_sanitizer` | Regex PII / domain scrubbing |
 | transform | `@register_transform` | Text pre-tokenization |
 | generator | `@register_generator` | `maatml datagen` candidate factories |
-| exporter | `@register_exporter` | `maatml export --format …` |
+| exporter | `@register_exporter` | `maatml export --format …` (`safetensors`, `adapter`, `gguf`, `mlx`, or plugins like `onnx`) |
 | compiler | `@register_compiler` | `maatml compile --target …` (TensorRT, vLLM package, GGUF quantize, …) |
-| server | `@register_server` | `maatml serve --server …` (HTTP, DeepStream, vLLM, llama.cpp, …) |
-| environment | `@register_environment` | Legal candidates, teacher labels, state transitions and independent verification for [rollouts](rollouts.md) |
+| server | `@register_server` | `maatml serve --server …` (`http`, `anthropic`, or plugins like DeepStream, vLLM, llama.cpp) |
+| environment | `@register_environment` | Candidate-ranking (`line_world`) or `free_text` (`arithmetic_world`) state transitions, optional teacher labels and independent verification for [rollouts](rollouts.md) and `grpo` |
 
 `maatml plugins` lists built-ins and discoverable installed plugins; it does
 not load an arbitrary model folder. Use `maatml audit <model-dir>` to check

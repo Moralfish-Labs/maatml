@@ -90,13 +90,20 @@ fault (`'stage' should be string`) repairs a reply where "invalid output" cannot
 **Derive the graded family from the gold target, never from the prediction.**
 If a validator decides which contract applies by looking at what the model
 produced, a broken answer falls into whichever family it accidentally resembles
-and leaves the denominator of the metric that was supposed to catch it — so the
+and leaves the denominator of the metric that was supposed to catch it, so the
 metric reads 0 of 0 at exactly the moment it stops working.
+
+A validator may also opt into host-side evidence by adding a named
+`prediction_context=None` keyword parameter (accepting `**kwargs` alone does
+not opt in). When a predictor implements `prediction_context(row) -> dict`,
+the evaluation harness snapshots it at `batch_size: 1`, passes a copy to the
+validator, exposes it on `RowEval.prediction_context`, and writes it beside
+each row in `evaluate --cache`.
 
 ## Layers, and why `ok` is derived
 
 `ok` is not something you set. A result is `ok` once every required layer has
-passed — `required_layers`, or `n_layers` for "layers 1..n". That is what makes
+passed (`required_layers`, or `n_layers` for "layers 1..n"). That is what makes
 a partial pass reportable: "parsed but broke the contract" is different from
 "did not parse", and both are different from "passed", and a bare boolean loses
 that.
@@ -110,7 +117,7 @@ one worth reporting.
 A metrics function is called once with every evaluated row and returns
 `{name: float}`. Each row is a `RowEval`: `.row` is the gold sample, `.gen_text`
 the model's output, `.result` the `ValidationResult`, `.latency_ms` the time it
-took.
+took, and `.prediction_context` any host-side evidence snapshot.
 
 ```python
 from maatml.registry import register_metrics
@@ -119,7 +126,7 @@ from maatml.registry import register_metrics
 @register_metrics("my_task")
 def metrics_my_task(rows):
     # The contract a row is held to comes from the GOLD sample, never from
-    # what came back — see below for why that distinction decides whether the
+    # what came back; see above for why that distinction decides whether the
     # metric can observe its own failure.
     graded = [r for r in rows if r.row.get("family") == "my_family"]
     passed = sum(1 for r in graded if r.result.ok)
@@ -130,8 +137,8 @@ Report each rate at **its own denominator** and name the metric after what it
 measures. maatml adds `output_nonempty_rate` alongside whatever you return.
 
 Two reserved keys are lifted out of `metrics` before the report is written.
-`__counts__` is the evidence behind each rate — `{"my_family_pass_rate":
-{"k": passed, "n": len(graded)}}` — and is what `maatml gates derive` floors
+`__counts__` is the evidence behind each rate (`{"my_family_pass_rate":
+{"k": passed, "n": len(graded)}}`) and is what `maatml gates derive` floors
 on. Without counts, an existing gate uses the observed value and labels it
 `observed`; it has no derived uncertainty bound. `__pathologies__` is a list of
 names or `{name, evidence}` dicts for output shapes no floor should have to
@@ -145,8 +152,9 @@ safety metric is worst.
 
 ## Predictors
 
-A predictor turns a checkpoint into output. Register one only when the
-architecture's default does not fit — for example when the prompt must be
+A predictor turns a checkpoint (or a live serving endpoint via the built-in
+`served_http` / `serve_parity` predictor) into output. Register one only when
+the architecture's default does not fit, for example when the prompt must be
 assembled from a `prompt_spec`, or when the served protocol differs from the
 trainer's default chat template.
 
@@ -166,6 +174,11 @@ class MyPredictor:
     def predict_batch(self, rows):
         """Optional. One string per row, same order; evaluation.batch_size > 1
         feeds chunks through this instead of predict, one device sync per chunk."""
+
+    def prediction_context(self, row):
+        """Optional (requires batch_size: 1). Host-side observations snapshotted
+        after predict(row) for opt-in validators, metrics, and --cache."""
+        return {}
 
     def report_extras(self):
         """Optional. Counts the report should carry, e.g. truncated_inputs."""
@@ -190,7 +203,7 @@ flagged `latency_amortized` in extras. A predictor without it runs one row at
 a time whatever the batch size, with a warning; a chunk that returns the
 wrong number of outputs is an error, never padded.
 
-Whatever the predictor does to raw output — repairing braces, stripping fences —
+Whatever the predictor does to raw output (repairing braces, stripping fences)
 belongs in `report_extras` too, so the report says the pass rate includes a
 repair rather than hiding it.
 
@@ -235,9 +248,17 @@ def export_my_fmt(model_def, checkpoint_dir, out_dir, *, run_id=None):
 ```
 
 Everything written must end up in `manifest.json` so `maatml verify` can check
-it. If a bundle gains a file out of band — a quantized GGUF produced separately
-— add it with `maatml manifest amend <export-dir> <file> --format gguf` rather
+it (`verify` also fails on unlisted files inside the export directory). If a
+bundle gains a file out of band (such as a quantized GGUF produced separately),
+add it with `maatml manifest amend <export-dir> <file> --format gguf` rather
 than leaving it unlisted.
+
+For rollout environments (`@register_environment`), implement `Environment`
+for candidate-ranking tasks (`candidates` + `step`, with optional `label`) or
+`FreeTextEnvironment` advertising `"free_text"` in `hello().capabilities` and
+implementing `step_text(episode, text, metadata=None)` for free-text rollouts,
+`filtered_imitation`, and `grpo`. Both work in-process and over stdio JSON
+lines (`maatml.rollout.serve(env)`).
 
 A backend that accepts `**kwargs` it does not honour will silently swallow flags
 like `--enforce`. If a flag is meant to apply to your backend, consume it
@@ -261,6 +282,6 @@ def test_a_broken_call_fails_at_the_layer_that_checks_it():
     assert result.errors[0].code == "missing_answer"
 ```
 
-Test the validator against **real artifacts the task has produced** — approved
+Test the validator against **real artifacts the task has produced**: approved
 outputs should pass and rejected ones should fail. A validator that has never
 seen a real success is a validator nobody has calibrated.

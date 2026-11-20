@@ -30,15 +30,16 @@ maatml scaffold <dir> --architecture causal_sft --name my-task
 maatml validate <model-dir>          # config, declared paths, plugin registration
 maatml audit    [model-dir]          # read-only pre-flight; exits 1 on anything broken
 
-maatml prepare  <model-dir>          # train/val/test splits
-maatml train    <model-dir>          # LoRA / QLoRA / full / DPO / ORPO / vision / VLM
-maatml evaluate <model-dir> --gate   # validator + metrics + gates, non-zero on failure
+maatml prepare  <model-dir>          # train/val/test splits (+ optional dataset.train_samples)
+maatml train    <model-dir>          # LoRA / QLoRA / full / DPO / ORPO / filtered_imitation / grpo / vision / VLM
+maatml evaluate <model-dir> --gate   # validator + metrics + gates, non-zero on failure (local or served_http)
 maatml evaluate <model-dir> --split val --cache --set evaluation.score_thresh=0.05   # sweep input
-maatml export   <model-dir> --format gguf
-maatml verify   <export-dir>         # sha256 against manifest.json
+maatml export   <model-dir> --format gguf   # safetensors | gguf | mlx | adapter | onnx
+maatml verify   <export-dir>         # sha256 + unlisted-file check against manifest.json
 maatml serve    <model-dir>
+maatml snapshot <model-dir> --started-after FILE --writer-lock PATH --min-step N --out BUNDLE
 
-maatml run  <model-dir>              # the whole walk, stopping at the first failure
+maatml run  <model-dir> [--resume auto|PATH] [--progress-file PATH]  # whole walk, stops on first failure
 maatml run  <model-dir> --smoke      # same walk, smoke tier
 maatml plan <model-dir>              # what is stale and why (= run --dry-run)
 maatml runs <model-dir> [--compare]  # what has been recorded
@@ -48,26 +49,34 @@ maatml report <model-dir>            # runs, floors with derivation, slices, see
 maatml rollout <model-dir> --env line_world --tasks '{"count": 50}' --label
 ```
 
-`run` skips steps whose fingerprint still matches — effective config, declared
+`run` skips steps whose fingerprint still matches: effective config, declared
 inputs, upstream fingerprint, maatml version and git SHA, plugin sources, device
 profile, exporter. That is **idempotence, not speed**: a step is skipped only if
 it completed last time and its outputs are still there. `output/pipeline.json`
 holds it; `plan` prints which component changed.
 
-The source operations — `datagen`, `distill`, `ingest`, `mint`, reviewed
-`serve --capture` — stay **outside** the runner. They change the seed corpus,
+The source operations (`datagen`, `distill`, `ingest`, `mint`, reviewed
+`serve --capture`) stay **outside** the runner. They change the seed corpus,
 which is exactly what makes `prepare` stale next run.
 
 Rollout collection also stays explicit. Its environment verifies outcomes;
 the format plugin can pass collected rows as `train_rows` to `prepare_rows`
-without moving held-out populations. Rollouts, train-only rows and tool-call
-chat training are available in 0.14.0 and later.
+without moving held-out populations. In **0.19.0**, the rollout protocol also
+supports `free_text` (`step_text`, `arithmetic_world`) feeding
+`filtered_imitation` and environment-verified `grpo`, alongside
+`training.reasoning_loss`, `served_http` / `serve_parity`, `--progress-file`,
+`run --resume`, `maatml snapshot`, and spec-checked `adapter` export.
 
 External orchestration owns worker provisioning, storage transfers, monitoring
-and cleanup. For recovery, preserve mid-run checkpoints and use a verified
-explicit `--resume` path with the original recipe and inputs. `runs --pack`
-omits nested `checkpoint-*` directories unless `--with-checkpoints` is set; it carries completed-run evidence,
-not an interrupted-training backup.
+and cleanup. Pass `--progress-file PATH` (or `FLOW_JOB_PROGRESS_FILE`) for
+atomic `JobProgress` heartbeats. On `SIGTERM` / `SIGINT` inside the training
+loop, MaatML flushes a checkpoint and records status `interrupted`. For live
+mid-run backups on POSIX hosts, set `training.checkpoint_snapshots: true` and
+run `maatml snapshot`. For recovery, preserve mid-run checkpoints and use a
+verified explicit `--resume` path with the original recipe and inputs.
+`runs --pack` omits nested `checkpoint-*` directories unless
+`--with-checkpoints` is set; it carries completed-run evidence, not an
+interrupted-training backup.
 
 Depth, in this skill's own folder: `references/model-yml.md` for the config
 surface, `references/plugins.md` for registering a validator, predictor,
@@ -80,7 +89,7 @@ resisting the urge to train early:
 
 1. **Name the contract before the model.** What makes an output correct, checked
    by a program rather than by reading it? If nothing can check it, the rest of
-   the loop has nothing to stand on — that is the question to answer first, not
+   the loop has nothing to stand on; that is the question to answer first, not
    which base model to use.
 2. `maatml scaffold <dir> --architecture causal_sft --name my-task` writes a
    folder whose sections already agree with each other.
@@ -91,7 +100,7 @@ resisting the urge to train early:
    transcribing it: dump the schema the application actually sends, walk the
    live API, read the vocabulary out of the real files.
 5. **Seed a small corpus by hand**, then grow it with `datagen` / `distill` /
-   `ingest` — every added row gated by that same validator. See
+   `ingest`, with every added row gated by that same validator. See
    `references/flywheel.md`.
 6. `maatml run <dir> --smoke` to prove the lifecycle walks end to end on real
    hardware. Declare `smoke.gates` for a separate smoke tier; without that
@@ -135,7 +144,7 @@ a cluster bootstrap over the group key. Other counted rates use Wilson; a
 metric without counts falls back to its observed value, not a confidence bound.
 Denominators differ by an order of magnitude in a multi-family model, so one
 shared floor is either unreachable for the small families or vacuous for the
-large ones — which is what `"slice:<field>=<value>"` gates and
+large ones, which is what `"slice:<field>=<value>"` gates and
 `evaluation.slices` are for. `--write` stamps `evaluation.gates_benchmark`
 with the split's hash; `evaluate --gate --strict-population` refuses to
 enforce floors derived on a different split.
@@ -159,19 +168,19 @@ checkpoint saved, reloaded and produced output, not that the output was good.
 
 ## Whether a run ships
 
-`maatml ship-check <dir> CANDIDATE BASELINE` — three parts, in order. Skipping
-the third makes release decisions wrong.
+`maatml ship-check <dir> CANDIDATE BASELINE` checks three parts, in order.
+Skipping the third makes release decisions wrong.
 
-1. **Absolute** — every gated metric at or above its floor, at production tier.
-2. **Delta** — no gated metric regresses against the accepted release. Exempt
+1. **Absolute**: every gated metric at or above its floor, at production tier.
+2. **Delta**: no gated metric regresses against the accepted release. Exempt
    moves smaller than one row at n>=30; one row is not evidence of decay.
-3. **Controlled replay** — when the benchmark changed, `--replay` evaluates
+3. **Controlled replay**: when the benchmark changed, `--replay` evaluates
    *both* checkpoints over identical rows. A raw delta across a changed
    benchmark reads benchmark hardening as model decay and rejects candidates
    that are actually better.
 
 A gate is a regression test, so it is silent on any defect the candidate and the
-baseline **share**. Only a growing benchmark finds those — which also means
+baseline **share**. Only a growing benchmark finds those, which also means
 floors must be re-derived from the benchmark in use, or they describe a
 population that no longer exists.
 
@@ -182,7 +191,7 @@ side a camera lands on. `dataset.isolation` (the row hierarchy and the level
 each held-out population is disjoint at) and `dataset.pins` (whole groups,
 `field:value`) say it, and `prepare` refuses splits that violate the policy.
 Every prepare records a **benchmark version**; an in-place edit of
-`benchmark_samples` is refused — a new file is a new version. A
+`benchmark_samples` is refused (a new file is a new version). A
 `dataset.blind_samples` manifest is spent by `evaluate --blind` **once per
 frozen candidate**, after a production gate pass, never before. Thresholds
 come from val (`maatml operating-point derive`); a `--confirm-on-test` is a
@@ -190,7 +199,7 @@ recorded **test spend**, and a second one on the same benchmark warns.
 
 When `dataset.attribution` is declared, every source must be signed in its table
 (licence, commercial-use, sign-off); a `no` / `unknown` commercial-use enters
-only under an `accepted-risk — name date` sign-off, and the corpus lock
+only under an `accepted-risk - name date` sign-off, and the corpus lock
 carries the acceptance into the export manifest.
 
 ## The contract is extracted, not authored
@@ -213,7 +222,9 @@ from documentation is a different version's contract, and it drifts silently.
 - **Put the validator in the path** with `--enforce --max-retries N`: a rejected
   reply goes back to the model carrying the validator's own message and is
   re-asked. That is the decline-with-a-note correction, automated.
-- **Evaluate the deployed quantization.** Compare citation and tool-call
+- **Evaluate the deployed quantization.** Use the built-in `served_http` /
+  `serve_parity` predictor against the live serving endpoint (`extensions.serve_parity`)
+  to verify export manifest hashes, server `/props`, citation and tool-call
   fidelity as well as aggregate scores; a full-precision gate pass does not
   establish a quantized artifact's behavior.
 - `serve --capture` needs `--auth-token`; captured rows are proposals, and
@@ -223,7 +234,7 @@ from documentation is a different version's contract, and it drifts silently.
 
 - **The model is right and the format is wrong.** Suspect the serialiser before
   the corpus. `distill.target_format: text` writes *string* targets; anything
-  that `json.dumps` them teaches the model to answer inside a quoted literal —
+  that `json.dumps` them teaches the model to answer inside a quoted literal:
   correct content that no validator accepts.
 - **A metric that cannot observe its own failure.** Derive the family a row is
   graded under from the **gold target**, never the prediction. A broken call
@@ -237,7 +248,7 @@ from documentation is a different version's contract, and it drifts silently.
   `maatml runs <dir> --pack RUN` and `--adopt` it at home: the whole run
   directory (without `checkpoint-*`), its eval reports and caches, the record
   and the environment, hashed and checked against the receiving `model.yml`.
-  Never a list of name patterns — a pattern list carries only what someone
+  Never use a list of name patterns; a pattern list carries only what someone
   remembered to name, and a missing `chat_template.jinja` is an adapter that
   cannot build a prompt.
 - **A flag that changes nothing.** A backend taking `**_ignored` accepts flags

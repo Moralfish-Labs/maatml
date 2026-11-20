@@ -22,8 +22,29 @@ maatml run   # prepare is now stale, so the loop retrains
 checkpoint. The task's format plugin turns these episodes into training rows.
 `prepare_rows(..., train_rows=...)` adds them only to train and refuses groups
 already present in val or test. This keeps collected experience from silently
-moving the evaluation population. See [Rollouts](rollouts.md) for the protocol,
-teacher mixing and independently verified outcomes.
+moving the evaluation population. Free-text rollout episodes (`free_text`
+capability) can also feed `filtered_imitation` or online `grpo`. See
+[Rollouts](rollouts.md) for the protocol, teacher mixing, free-text actions and
+independently verified outcomes.
+
+## Corrective train-only examples (`dataset.train_samples`)
+
+For the `jsonl_seed` format, add reviewed corrective examples via
+`dataset.train_samples` instead of modifying the seed population:
+
+```yaml
+dataset:
+  format: jsonl_seed
+  seed_samples: datasets/samples/seed_samples.jsonl
+  train_samples: datasets/samples/corrections.jsonl
+  benchmark_samples: datasets/samples/benchmark.jsonl
+```
+
+Train-only rows join train after seed splitting, check held-out group
+collisions, pass configured isolation and attribution checks, and enter
+`corpus.lock.json`. For large corpora, `prepare_stream` consumes rows
+incrementally while retaining isolation, attribution and benchmark checks, and
+preserves the previous prepared output if preparation is refused.
 
 ## `maatml datagen`: generate rows
 
@@ -92,7 +113,7 @@ below: a `serve_capture` row is refused unless a reviewer approved it.
 sidecar object names a frame (`frame`, `timestamp_ms`, or `t`) and the gold
 target; ffmpeg writes PNGs under `datasets/samples/images/` and the request
 field becomes that relative path. Annotation dialects (MEVA KPF, COCO VID)
-stay in the sidecar a plugin writes — core does not parse them.
+stay in the sidecar a plugin writes; core does not parse them.
 
 ```bash
 maatml ingest <model> --input boxes.jsonl --video clip.mp4 --map expected=boxes

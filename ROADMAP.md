@@ -60,7 +60,12 @@ they are not the current task queue.
 | v0.12 | Batched evaluation with per-row evidence and amortized latency reporting | Done |
 | v0.13 | Lifecycle evaluation-schema parity and CLI version reporting | Done |
 | v0.14 | Rollout environment protocol, DAgger labels, streamed progress and Wilson intervals; train-only rows; tool-call chat training and multi-turn masking; inline gate rewrite fix | Done |
-| — | Slim artifact distribution | Planned |
+| v0.15 | Streaming prepare (`prepare_stream`), corrective `dataset.train_samples`, `evaluate --out`, `training.disable_tqdm`, strict population & ship-check hardening | Done |
+| v0.16 | `maatml snapshot` live checkpoint backups, `training.checkpoint_snapshots`, `prediction_context` per-prediction evidence, asset-hashed corpus lock, gzip level 1 bundles | Done |
+| v0.17 | Processor-aware SFT trainers (`data_collator_factory`), `training.frozen_module_prefixes`, `extensions.gguf.mmproj` multimodal companion, Gemma 4 mask checks | Done |
+| v0.18 | Regex `training.lora.target_modules`, spec-checked `export --format adapter`, `RowTooLongError` refusal of over-long SFT rows | Done |
+| v0.19 | Evaluation predictor hardening & Gemma 4 tool parsing, SIGTERM/SIGINT checkpoint flush (`interrupted`), `--progress-file`, `run --resume`, `verify` unlisted-file detection & sharded snapshots, `served_http`/`serve_parity` parity predictor, `training.reasoning_loss` masking, `free_text` rollouts (`arithmetic_world`), `filtered_imitation`, environment-verified `grpo` | Done |
+| Planned | Slim artifact distribution | Planned |
 
 ## Current ownership and next work
 
@@ -447,15 +452,13 @@ contract for every predictor today. Tracked for a serving follow-up.
 runner (verified export as a runner step). `verify`'s own blind spots close
 inside this tranche, before publish/pull builds on it.
 
-- **`verify` closes its blind spots first**: distribution multiplies bundles
-  in the wild, so the verb it rests on must be exact:
+- **`verify` blind spots**:
   - files present in the export dir but absent from `manifest.json` are
-    verification errors (injected-file detection)
+    verification errors (shipped in v0.19.0)
   - `export --parity` writes its artifacts outside the bundle or re-emits the
     manifest afterwards, a documented flag must not invalidate the bundle it
     documents
-  - with these shipped, docs may describe `verify` as integrity checking of
-    the full bundle contents; tamper evidence still waits for signing (Later)
+  - tamper evidence still waits for signing (Later)
 - **Canonical bundle digest**: stable digest from identity + formats + sorted
   file hashes in `manifest.json`
 - **`maatml publish` / `pull`** with two backends: `local` (network-free

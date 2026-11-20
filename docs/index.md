@@ -36,8 +36,8 @@ pip install "maatml[ml,vision]"  # + torchvision and ONNX (vision / VLM examples
 - [Contributing](contributing.md): development and documentation checks
 - [Evidence](evidence.md): derived floors, the ship decision, operating points, named populations, licences, portable runs
 - [Orchestration and recovery](orchestration.md): CLI ownership, remote workers, checkpoint continuation and portable evidence
-- [Rollouts](rollouts.md): environment verification and DAgger collection
-- [Serving & deployment](serving.md): `maatml serve`, ONNX/edge, and vLLM (VLMs)
+- [Rollouts](rollouts.md): candidate-ranking and free-text environment verification, DAgger, filtered imitation and GRPO
+- [Serving & deployment](serving.md): `maatml serve`, served-model parity (`served_http` / `serve_parity`), adapter/GGUF exports, ONNX/edge, and vLLM (VLMs)
 - [Plugin author guide](plugins.md): register trainers, validators, metrics, exporters, generators
 - [Examples](examples/index.md): four reference models, from support-ticket triage to a vLLM-servable VLM
 
@@ -51,18 +51,19 @@ Canonical references in the repo:
 
 | Command | Purpose |
 |---------|---------|
-| `maatml prepare` | Build train/val/test splits |
-| `maatml train` | Fine-tune (LoRA / QLoRA / full / DPO / ORPO / vision / VLM) |
-| `maatml evaluate` | Validator + metrics + eval gates (`--gate` fails CI; `--cache`, `--blind`) |
+| `maatml prepare` | Build train/val/test splits (with optional `dataset.train_samples`) |
+| `maatml train` | Fine-tune (LoRA / QLoRA / full / DPO / ORPO / `filtered_imitation` / `grpo` / vision / VLM); `--resume`, `--progress-file` |
+| `maatml evaluate` | Validator + metrics + eval gates on local checkpoints or live endpoints (`served_http` / `serve_parity`); `--gate`, `--cache`, `--out`, `--blind` |
 | `maatml gates derive` / `ship-check` / `operating-point derive` | Floors from reports, the release verdict, the val-derived threshold ([evidence](evidence.md)) |
 | `maatml runs` / `report` | The run registry (`--pack` / `--adopt` to move a run); the evidence document from the records alone |
+| `maatml snapshot` | Capture a complete mid-run checkpoint into a portable backup bundle without stopping training |
 | `maatml export` | Bundle checkpoint (safetensors / gguf / mlx / adapter / onnx) + `manifest.json` |
 | `maatml compile` / `manifest amend` | Target compilation and checksummed additions to an export |
-| `maatml verify` | Recompute sha256 of manifest files |
-| `maatml serve` | JSON inference API, validator inline (`/predict?validate=1`) |
+| `maatml verify` | Recompute sha256 of manifest files and flag unlisted files under the export |
+| `maatml serve` | JSON inference API (`http` / `anthropic` / plugins), validator inline (`/predict?validate=1`, `--enforce`) |
 | `maatml datagen` / `distill` / `ingest` / `mint` | Validator-gated [data flywheel](flywheel.md) |
-| `maatml run` / `plan` | Fixed lifecycle and freshness planning |
-| `maatml rollout` | Environment-verified episodes and optional teacher labels |
+| `maatml run` / `plan` | Fixed lifecycle (`--resume`, `--progress-file`) and freshness planning |
+| `maatml rollout` | Environment-verified episodes (candidate-ranking or `free_text`) and optional teacher labels |
 
 See the [Plugin author guide](plugins.md) for registering generators, exporters,
 validators, and metrics.

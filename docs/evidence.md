@@ -42,8 +42,12 @@ to its observed value, labelled `observed`; that is not a confidence bound.
 
 `--write` stamps `evaluation.gates_benchmark` with the split's content hash.
 A later `evaluate --gate` on a different split warns (`population_mismatch`
-in the gates payload), and `--strict-population` refuses: floors describe the
-population they came from.
+in the gates payload), and `--strict-population` refuses before loading the
+predictor: floors describe the population they came from. Use
+`evaluate --out DIR` to write a new report and prediction cache separately from
+historical results, and `evaluate --batch-size N` to run batched predictors
+without changing per-row evidence (or `prediction_context` snapshots when
+`batch_size: 1`).
 
 Gates carry a **tier**: `{min: 0.80, tier: advisory}` is reported and listed
 under `advisory_failed` but never fails the step. A `"slice:<field>=<value>"`
@@ -139,14 +143,15 @@ A sidecar Markdown table, one row per `source` (`licence`, `commercial-use`,
 another row field when `dataset.attribution_field` names one. `prepare`
 refuses a row without a source or without a table row, a blocked or unsigned
 sign-off, and a `no` / `unknown` commercial-use unless the sign-off itself
-reads `accepted-risk — <name> <date>`. Acceptance is signed in the table, not
+reads `accepted-risk - <name> <date>`. Acceptance is signed in the table, not
 passed as a flag, so it carries a name and a date.
 
 Every prepare writes `output/prepared/corpus.lock.json` (input files by
-sha256 and row count, the attribution rows used, the risk accepted), and
-`export` copies it into `manifest.json` as `corpus_lock`, with the rows
-rendered as the bundle's `ATTRIBUTION.md`. Declared metadata only; nothing is
-looked up.
+sha256 and row count, supporting assets such as prompt specs and schemas by
+hash, `dataset.train_samples` when declared, the attribution rows used, the
+risk accepted), and `export` copies it into `manifest.json` as `corpus_lock`,
+with the rows rendered as the bundle's `ATTRIBUTION.md`. Declared metadata
+only; nothing is looked up.
 
 ## Training tells the truth earlier
 

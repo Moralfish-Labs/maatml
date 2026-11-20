@@ -18,7 +18,10 @@ pip install -e ".[ml]"
 
 This walkthrough installs the checkout so its examples and framework agree.
 For a released installation with your own model folder, use
-`pip install "maatml[ml]"` instead. Use 0.14.0 or later for rollouts and tool-call chat training.
+`pip install "maatml[ml]"` instead. Use **0.19.0** for served-model parity,
+reasoning-span loss masking, free-text rollouts, `filtered_imitation`, `grpo`,
+`maatml snapshot`, `--progress-file`, and spec-checked `adapter` export (0.14.0
+or later for candidate rollouts and tool-call chat training).
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
 
 `[ml]` pulls in the training stack (`torch`, `transformers`, `peft`, …). If you
