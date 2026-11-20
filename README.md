@@ -23,9 +23,11 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The package version is **0.18.0**. This version adds a regular expression
-for LoRA target modules, the `adapter` export format with a layout check, and
-refuses over-long SFT rows instead of truncating them. It also includes
+The package version is **0.19.0**. This version adds a served-model parity
+predictor, reasoning-span loss masking for SFT, free-text rollouts, the
+`filtered_imitation` objective and an environment-verified GRPO trainer. It also
+includes regular-expression LoRA targets, the `adapter` export format with a
+layout check, a refusal of over-long SFT rows instead of truncation,
 processor-aware SFT trainers, frozen-component checks, multimodal GGUF
 companions, `maatml snapshot` checkpoint
 backups, per-prediction evidence, streaming preparation, `dataset.train_samples` for corrective examples, stricter

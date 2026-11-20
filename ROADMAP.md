@@ -31,7 +31,9 @@ does not belong in them.
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
 
-Current package version: **0.18.0**. Regular-expression LoRA targets,
+Current package version: **0.19.0**. Served-model parity, reasoning-span loss
+masking, free-text rollouts, filtered imitation, environment-verified GRPO,
+regular-expression LoRA targets,
 spec-checked adapter export, processor-aware SFT trainers,
 frozen-component checks, multimodal GGUF companions, checkpoint snapshots,
 per-prediction evidence, streaming preparation, corrective training inputs, population

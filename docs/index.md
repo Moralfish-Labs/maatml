@@ -69,7 +69,9 @@ validators, and metrics.
 
 ## Release boundary
 
-These docs describe **0.18.0**, including spec-checked adapter export,
+These docs describe **0.19.0**, including served-model parity, reasoning-span
+loss masking, free-text rollouts, filtered imitation, environment-verified GRPO,
+spec-checked adapter export,
 regular-expression LoRA targets, processor-aware SFT trainers,
 multimodal GGUF companions, checkpoint snapshots, per-prediction evidence, streaming preparation, corrective train-only inputs, population
 safeguards, rollouts and tool-call chat training. Upgrade older installations

@@ -8,6 +8,8 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-20
+
 ### Added
 
 - Core served-model parity predictor (`served_http` / `serve_parity` in
