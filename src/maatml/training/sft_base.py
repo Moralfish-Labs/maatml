@@ -75,6 +75,7 @@ from .guards import (
     make_nan_guard_callback,
     write_run_metadata,
 )
+from .label_logits import accepts_logits_to_keep, label_logits_trainer
 from .load import from_pretrained_kwargs, maybe_prepare_kbit
 from .schedule import precision_flags, total_training_steps
 from .schedule import warmup_steps as resolve_warmup_steps
@@ -1010,6 +1011,17 @@ def train_sft(
             }
             if cfg.lr_scheduler_kwargs is not None:
                 args_kwargs["lr_scheduler_kwargs"] = cfg.lr_scheduler_kwargs
+            trainer_cls: type = Trainer
+            if cfg.logits == "labels":
+                if distributed:
+                    raise ValueError("training.logits: labels runs in a single process")
+                if not accepts_logits_to_keep(model):
+                    raise ValueError(
+                        "training.logits: labels needs a model whose forward takes logits_to_keep"
+                    )
+                trainer_cls = label_logits_trainer(Trainer)
+                # Evaluation logits cover only labelled positions, so only the loss is kept.
+                args_kwargs["prediction_loss_only"] = True
             # transformers≥5 dropped group_by_length from TrainingArguments.
             import inspect
 
@@ -1033,7 +1045,7 @@ def train_sft(
                     raise ValueError("SFT snapshot requires a native recipe fingerprint")
                 callbacks.append(make_snapshot_ready_callback(run.spec_hash))
 
-            trainer = Trainer(
+            trainer = trainer_cls(
                 model=model,
                 args=args,
                 train_dataset=train_ds,

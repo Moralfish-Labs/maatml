@@ -8,6 +8,13 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Added
+
+- `training.logits: labels` for causal SFT: the forward pass returns logits only
+  for positions that predict a trained token, with the same loss and gradients
+  as the default, so long rows with a large vocabulary fit in far less GPU
+  memory. The default `all` keeps the previous behaviour.
+
 ## [0.19.1] - 2026-11-20
 
 ### Documentation

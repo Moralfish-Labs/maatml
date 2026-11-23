@@ -370,6 +370,7 @@ training:
   precision: bf16
   grad_checkpointing: true
   reasoning_loss: include     # include | mask | reasoning_only
+  logits: all                 # all | labels (score only positions that predict a trained token)
   frozen_module_prefixes: []  # submodule paths that must stay frozen and unchanged
   seed: 7
   generation:
@@ -390,6 +391,12 @@ contribute to causal SFT loss: `include` supervises the whole assistant turn,
 `mask` masks reasoning blocks (`-100`) to supervise only answer and tool-call
 tokens, and `reasoning_only` supervises only reasoning blocks. Changing
 `reasoning_loss` isolates the tokenized cache key automatically.
+
+`logits: labels` scores only the positions whose next token carries a label
+instead of every position against the vocabulary. The loss and gradients are
+the same; it removes the sequence-by-vocabulary logits that dominate memory on
+long rows with a large vocabulary. It needs a model whose `forward` takes
+`logits_to_keep`, a single process, and keeps only the loss during evaluation.
 
 ### GRPO training (`architecture: grpo`)
 

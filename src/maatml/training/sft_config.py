@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 VALID_PRECISIONS = ("bf16", "fp16", "fp32")
 VALID_SAVE_STRATEGIES = ("no", "steps", "epoch")
 VALID_REASONING_LOSS_MODES = ("include", "mask", "reasoning_only")
+VALID_LOGITS_MODES = ("all", "labels")
 # Read by the lifecycle after training, not by any trainer.
 LIFECYCLE_TRAINING_KEYS = frozenset({"select_by"})
 
@@ -140,6 +141,10 @@ class SFTTrainConfig(BaseModel):
     # <|channel>thought) inside assistant turns contribute to SFT loss:
     # "include" (default), "mask" (answer/tool tokens only), or "reasoning_only".
     reasoning_loss: str = "include"
+    # Which positions the forward pass scores against the vocabulary: "all"
+    # (default) or "labels", only those that predict a trained token. The loss
+    # is the same; "labels" removes the full sequence-by-vocabulary logits.
+    logits: str = "all"
 
     @field_validator("precision")
     @classmethod
@@ -154,6 +159,16 @@ class SFTTrainConfig(BaseModel):
             raise ValueError(
                 f"training.reasoning_loss must be one of {', '.join(VALID_REASONING_LOSS_MODES)}; "
                 f"got {v!r}"
+            )
+        return text
+
+    @field_validator("logits")
+    @classmethod
+    def _check_logits(cls, v: Any) -> str:
+        text = str(v).strip()
+        if text not in VALID_LOGITS_MODES:
+            raise ValueError(
+                f"training.logits must be one of {', '.join(VALID_LOGITS_MODES)}; got {v!r}"
             )
         return text
 

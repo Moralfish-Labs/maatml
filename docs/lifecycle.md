@@ -216,6 +216,23 @@ Spans are aligned back to token offsets; unclosed tags are left untouched so
 malformed text never silently masks an answer. Changing `reasoning_loss`
 changes the tokenized cache key automatically.
 
+## Logits for labelled positions only
+
+By default the forward pass scores every position against the whole
+vocabulary and the loss then masks all but the labelled ones. With a large
+vocabulary and long prompts that sequence-by-vocabulary tensor dominates
+training memory: for a 262,144-entry vocabulary it is about 1 MiB per position
+in fp32, so a 7,000-token row needs about 7 GiB for it alone.
+`training.logits: labels` asks the model for the logits of only the positions
+whose next token carries a label (`logits_to_keep` with a position tensor) and
+divides the summed cross entropy exactly as the default causal-LM loss does,
+so the loss and its gradients are unchanged.
+
+| Value | Effect |
+| --- | --- |
+| `all` (default) | The model computes logits for every position. |
+| `labels` | Only positions that predict a trained token are scored. Needs a model whose `forward` takes `logits_to_keep`, runs in a single process, and keeps only the loss during evaluation. |
+
 ## Verified-output post-training
 
 Beyond supervised fine-tuning (`causal_sft`, `seq2seq`, `vlm_sft`,
