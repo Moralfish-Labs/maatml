@@ -31,7 +31,7 @@ does not belong in them.
 Version numbers are assigned only when a tranche ships. Planned tranches below
 are ordered but unversioned.
 
-Current package version: **0.19.1**. Served-model parity, reasoning-span loss
+Current package version: **0.20.0**. Served-model parity, reasoning-span loss
 masking, free-text rollouts, filtered imitation, environment-verified GRPO,
 regular-expression LoRA targets,
 spec-checked adapter export, processor-aware SFT trainers,

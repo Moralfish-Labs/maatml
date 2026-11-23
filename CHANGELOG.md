@@ -8,6 +8,8 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-23
+
 ### Added
 
 - `training.logits: labels` for causal SFT: the forward pass returns logits only
