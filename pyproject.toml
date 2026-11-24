@@ -55,7 +55,7 @@ dev = [
   # defaults, and others) that flag ~490 pre-existing sites across the repo.
   # Adopting it needs config decisions, tracked separately; without the bound
   # CI lints against whatever ruff released today.
-  "ruff>=0.5,<0.16",
+  "ruff>=0.5,<0.18",
   # Bounded like ruff above: a major bump changes what the gate reports, and
   # CI installs whatever resolves on the day. mypy 2.x passes today.
   "mypy>=1.10,<3",
