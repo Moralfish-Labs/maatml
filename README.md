@@ -23,9 +23,10 @@ Source: [github.com/Moralfish-Labs/maatml](https://github.com/Moralfish-Labs/maa
 
 ## Implementation and release status
 
-The package version is **0.20.0**. It adds label-only logits for causal SFT
-(`training.logits: labels`). The 0.19 line added a served-model parity
-predictor, reasoning-span loss masking for SFT, free-text rollouts, the
+The package version is **0.20.1**. It resumes a run restored on another host.
+0.20.0 added label-only logits for causal SFT (`training.logits: labels`). The
+0.19 line added a served-model parity predictor, reasoning-span loss masking
+for SFT, free-text rollouts, the
 `filtered_imitation` objective and an environment-verified GRPO trainer. It also
 includes regular-expression LoRA targets, the `adapter` export format with a
 layout check, a refusal of over-long SFT rows instead of truncation,

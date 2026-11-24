@@ -8,6 +8,8 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-24
+
 ### Fixed
 
 - `train --resume auto` and `--resume RUN_ID` find a run whose files were

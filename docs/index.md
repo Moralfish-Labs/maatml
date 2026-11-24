@@ -70,7 +70,7 @@ validators, and metrics.
 
 ## Release boundary
 
-These docs describe **0.20.0**, including served-model parity, reasoning-span
+These docs describe **0.20.1**, including served-model parity, reasoning-span
 loss masking, free-text rollouts, filtered imitation, environment-verified GRPO,
 spec-checked adapter export,
 regular-expression LoRA targets, processor-aware SFT trainers,
