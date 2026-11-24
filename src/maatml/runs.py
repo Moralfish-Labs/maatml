@@ -497,6 +497,21 @@ def latest_completed_run(model_def: ModelDefinition) -> Optional[RunRecord]:
     return max(completed, key=_key)
 
 
+def run_folder(model_def: ModelDefinition, rec: RunRecord) -> Path:
+    """The run's folder on this host.
+
+    ``out_dir`` is the absolute path on the machine that trained. A run whose
+    files travelled with the model folder (state restored on another host)
+    sits at ``output/checkpoints/<run_id>`` instead, the same place
+    :func:`resolve_checkpoint` and ``runs --pack`` look.
+    """
+    recorded = Path(rec.out_dir)
+    if recorded.is_dir():
+        return recorded
+    moved = model_def.checkpoints_dir / rec.run_id
+    return moved if moved.is_dir() else recorded
+
+
 def _has_hf_checkpoints(path: Path) -> bool:
     if not path.is_dir():
         return False
@@ -512,7 +527,7 @@ def latest_incomplete_run(model_def: ModelDefinition) -> Optional[RunRecord]:
     run that could actually be resumed.
     """
     runs = list_runs(model_def)
-    resumable = [r for r in runs if _has_hf_checkpoints(Path(r.out_dir))]
+    resumable = [r for r in runs if _has_hf_checkpoints(run_folder(model_def, r))]
     active = [r for r in resumable if r.status in ("running", "interrupted")]
     if active:
         return active[-1]
@@ -549,7 +564,7 @@ def resolve_resume_checkpoint(
         rec = latest_incomplete_run(model_def)
         if rec is None:
             raise FileNotFoundError(f"No incomplete run to resume under {model_def.output_dir}")
-        root = Path(rec.out_dir)
+        root = run_folder(model_def, rec)
         ckpt = _last_trainer_checkpoint(root)
         if ckpt is None:
             raise FileNotFoundError(
@@ -561,7 +576,7 @@ def resolve_resume_checkpoint(
         # Allow run_id or path relative to model dir / checkpoints.
         as_run = get_run(model_def, resume)
         if as_run is not None:
-            root = Path(as_run.out_dir)
+            root = run_folder(model_def, as_run)
             ckpt = _last_trainer_checkpoint(root)
             if ckpt is None:
                 raise FileNotFoundError(
@@ -689,11 +704,11 @@ def begin_training_run(
         existing = get_run(model_def, resume_root.name)
         if existing is None:
             for rec in list_runs(model_def):
-                if Path(rec.out_dir).resolve() == resume_root.resolve():
+                if run_folder(model_def, rec).resolve() == resume_root.resolve():
                     existing = rec
                     break
         if existing is not None:
-            out = Path(existing.out_dir)
+            out = run_folder(model_def, existing)
             run = start_run(
                 model_def,
                 smoke=smoke,

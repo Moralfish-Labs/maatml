@@ -8,6 +8,14 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `train --resume auto` and `--resume RUN_ID` find a run whose files were
+  restored on another host. `runs.jsonl` records the folder on the machine that
+  trained; when that path is missing, resume looks in
+  `output/checkpoints/<run_id>`, as `--checkpoint` and `runs --pack` already
+  do, and the resumed run keeps its id and writes there.
+
 ## [0.20.0] - 2026-11-23
 
 ### Added

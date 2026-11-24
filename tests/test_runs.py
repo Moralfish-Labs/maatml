@@ -152,6 +152,43 @@ def test_resume_skips_running_records_with_no_checkpoint(tmp_path: Path) -> None
     assert resolve_resume_checkpoint(md, "auto") == Path(resumable.out_dir) / "checkpoint-10"
 
 
+def _moved_here(md: ModelDefinition) -> str:
+    """An interrupted run whose record names the host it trained on."""
+    from maatml.runs import RunRecord, _append_record
+
+    rec = start_run(md)
+    (Path(rec.out_dir) / "checkpoint-50").mkdir(parents=True)
+    elsewhere = f"/content/ws/model/output/checkpoints/{rec.run_id}"
+    _append_record(
+        md, RunRecord(**{**rec.model_dump(), "out_dir": elsewhere, "status": "interrupted"})
+    )
+    return rec.run_id
+
+
+def test_resume_finds_a_run_restored_from_another_host(tmp_path: Path) -> None:
+    pytest.importorskip("transformers")
+    md = _md(tmp_path)
+    run_id = _moved_here(md)
+    here = md.checkpoints_dir / run_id / "checkpoint-50"
+
+    assert resolve_resume_checkpoint(md, "auto") == here
+    assert resolve_resume_checkpoint(md, run_id) == here
+
+
+def test_resumed_moved_run_keeps_its_id_and_trains_here(tmp_path: Path) -> None:
+    pytest.importorskip("transformers")
+    from maatml.runs import begin_training_run
+
+    md = _md(tmp_path)
+    run_id = _moved_here(md)
+
+    run, out, resume = begin_training_run(md, resume="auto")
+    assert run.run_id == run_id
+    assert out == md.checkpoints_dir / run_id
+    assert resume == out / "checkpoint-50"
+    assert get_run(md, run_id).out_dir == str(out)
+
+
 def _orphan(tmp_path: Path, run_id: str, *, report: dict | None = None) -> ModelDefinition:
     """A checkpoint on disk whose registry line never travelled with it."""
     import json
