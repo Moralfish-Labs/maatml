@@ -8,6 +8,8 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-24
+
 ### Fixed
 
 - The recipe fingerprint (`spec_hash`) leaves out training keys that only

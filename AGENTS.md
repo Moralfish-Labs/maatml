@@ -70,7 +70,7 @@ torchrun --nproc_per_node=N -m maatml.cli train examples/<name>/
 .venv/bin/python examples/vision-describer/scripts/build_seeds.py --target 400
 ```
 
-See [ROADMAP.md](ROADMAP.md) for the **0.20.1** release boundary and
+See [ROADMAP.md](ROADMAP.md) for the **0.20.2** release boundary and
 planned tranches. See [docs/orchestration.md](docs/orchestration.md)
 for worker and checkpoint ownership; external orchestration stays outside core.
 
