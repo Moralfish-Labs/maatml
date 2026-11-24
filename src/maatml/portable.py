@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .config import ModelDefinition
-from .runs import RunRecord, _append_record, get_run, spec_fingerprint
+from .runs import RunRecord, _append_record, get_run, recipe_matches, spec_fingerprint
 from .utils.io import sha256_file
 
 BUNDLE_KIND = "maatml.run_bundle/1"
@@ -151,7 +151,7 @@ def adopt_bundle(model_def: ModelDefinition, bundle: Path, *, force: bool = Fals
             f"{bundle.name} was packed for {manifest.get('identity')}, this folder is "
             f"{model_def.identity}; pass --force to adopt it anyway"
         )
-    if manifest.get("spec_hash") != here and not force:
+    if not recipe_matches(model_def, manifest.get("spec_hash")) and not force:
         raise BundleError(
             f"{bundle.name} was packed under model.yml {str(manifest.get('spec_hash'))[:12]}, "
             f"this folder is {here[:12]}: the recipe differs, so the evidence would describe "

@@ -8,6 +8,17 @@ for the Python package and per-model versions under `examples/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- The recipe fingerprint (`spec_hash`) leaves out training keys that only
+  change how a run executes: `dataloader_workers`, `disable_tqdm`,
+  `logging_steps`, `report_to` and `checkpoint_snapshots`, under `training`
+  and `smoke`. A run trained with `--set training.dataloader_workers=0` on a
+  host that needs it now adopts without `--force`. Save cadence, kept
+  checkpoints and eval cadence stay in the recipe, because `select_by` picks
+  the shipped checkpoint from them. `runs --adopt` still accepts the whole-spec
+  hash that bundles packed by 0.20.1 and earlier recorded.
+
 ## [0.20.1] - 2026-11-24
 
 ### Fixed

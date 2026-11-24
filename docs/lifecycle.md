@@ -300,6 +300,11 @@ trainers backed by the `maatml.rollout_env/1` protocol (see
 - `verify` fails on missing files, checksum mismatches, and unlisted files
   present under the export directory.
 - `runs --adopt` refuses a bundle packed under another `model.yml` or identity,
-  and any file whose hash differs from the bundle's manifest.
+  and any file whose hash differs from the bundle's manifest. The recipe
+  fingerprint leaves out training keys that only change how a run executes
+  (`dataloader_workers`, `disable_tqdm`, `logging_steps`, `report_to`,
+  `checkpoint_snapshots`), so a run trained with
+  `--set training.dataloader_workers=0` still adopts into the folder it came
+  from.
 - `sweep` records a failed trial and keeps going, then exits non-zero. It ranks
   only trials that reported the metric being ranked.

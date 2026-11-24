@@ -170,6 +170,47 @@ def test_adopt_refuses_another_recipe_or_identity_without_force(tmp_path: Path) 
     assert adopt_bundle(home_md, bundle, force=True).run_id == "run-a"
 
 
+def _recorded_under(mdir: Path, spec_hash: str, run_id: str = "run-a") -> None:
+    md = load_model_def(mdir, load_plugins=False)
+    rec = get_run(md, run_id)
+    _append_record(md, RunRecord(**{**rec.model_dump(), "spec_hash": spec_hash}))
+
+
+def test_a_run_that_only_changed_how_it_executed_adopts_without_force(tmp_path: Path) -> None:
+    from maatml.overrides import apply_overrides
+    from maatml.runs import spec_fingerprint
+
+    origin = _folder(tmp_path, "origin")
+    _trained(origin)
+    md = load_model_def(origin, load_plugins=False)
+    # The training host needed fewer data-loader workers and less output.
+    ran = apply_overrides(md, ["training.dataloader_workers=0", "training.disable_tqdm=true"])
+    _recorded_under(origin, spec_fingerprint(ran))
+    bundle = pack_run(md, "run-a", out=tmp_path)
+
+    home_md = load_model_def(_folder(tmp_path, "home"), load_plugins=False)
+    rec = adopt_bundle(home_md, bundle)
+    assert rec.adopted_from["forced"] is False
+
+
+def test_a_bundle_packed_before_runtime_keys_left_the_fingerprint_still_adopts(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    origin = _folder(tmp_path, "origin")
+    _trained(origin)
+    md = load_model_def(origin, load_plugins=False)
+    whole = json.dumps(
+        md.model_dump(mode="json", exclude={"model_dir"}), sort_keys=True, separators=(",", ":")
+    )
+    _recorded_under(origin, hashlib.sha256(whole.encode("utf-8")).hexdigest())
+    bundle = pack_run(md, "run-a", out=tmp_path)
+
+    home_md = load_model_def(_folder(tmp_path, "home"), load_plugins=False)
+    assert adopt_bundle(home_md, bundle).adopted_from["forced"] is False
+
+
 def test_adopt_checks_every_file_against_the_manifest(tmp_path: Path) -> None:
     origin = _folder(tmp_path, "origin")
     _trained(origin)

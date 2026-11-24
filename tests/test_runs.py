@@ -262,3 +262,30 @@ def test_finish_run_rejects_running_and_accepts_interrupted(tmp_path: Path) -> N
     interrupted = finish_run(md, rec.run_id, "interrupted", error="SIGTERM")
     assert interrupted is not None
     assert interrupted.status == "interrupted"
+
+
+def test_runtime_only_training_keys_leave_the_recipe_fingerprint_alone(tmp_path: Path) -> None:
+    from maatml.overrides import apply_overrides
+    from maatml.runs import spec_fingerprint
+
+    md = _md(tmp_path)
+    md.training.update({"learning_rate": 1e-4, "keep_checkpoints": 2, "select_by": "loss"})
+    base = spec_fingerprint(md)
+    for runtime in (
+        "training.dataloader_workers=0",
+        "training.disable_tqdm=true",
+        "training.logging_steps=5",
+        "training.report_to=none",
+        "training.checkpoint_snapshots=true",
+        "smoke.dataloader_workers=0",
+    ):
+        ran = apply_overrides(md.model_copy(deep=True), [runtime])
+        assert spec_fingerprint(ran) == base, runtime
+    for recipe in (
+        "training.learning_rate=5e-5",
+        "training.keep_checkpoints=4",
+        "training.save_steps=50",
+        "training.eval_steps=25",
+    ):
+        changed = apply_overrides(md.model_copy(deep=True), [recipe])
+        assert spec_fingerprint(changed) != base, recipe

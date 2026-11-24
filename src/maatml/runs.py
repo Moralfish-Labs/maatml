@@ -281,14 +281,46 @@ def adopt_run(model_def: ModelDefinition, run_id: str) -> Optional[RunRecord]:
     return record
 
 
-def spec_fingerprint(model_def: ModelDefinition) -> str:
-    """sha256 of the effective model definition: the model-folder fingerprint
-    a run is produced under (the same hash ``run_metadata.json`` records)."""
+#: Training keys that change how a run is carried out, never what it learns
+#: or which checkpoint it ships: data-loading parallelism, progress output,
+#: metric logging and reporting, and snapshot publishing. Save cadence, kept
+#: checkpoints and eval cadence stay in the recipe because ``select_by`` picks
+#: the shipped checkpoint from what was saved and evaluated.
+RUNTIME_ONLY_TRAINING_KEYS = frozenset(
+    {"dataloader_workers", "disable_tqdm", "logging_steps", "report_to", "checkpoint_snapshots"}
+)
+
+
+def _spec_hash(spec: dict[str, Any]) -> str:
     import hashlib
 
-    spec = model_def.model_dump(mode="json", exclude={"model_dir"})
     body = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def spec_fingerprint(model_def: ModelDefinition) -> str:
+    """sha256 of the recipe: the effective model definition without
+    :data:`RUNTIME_ONLY_TRAINING_KEYS` under ``training`` and ``smoke``. It is
+    the fingerprint a run is produced under and the hash ``run_metadata.json``
+    records, so a run that only changed how it executed (``--set
+    training.dataloader_workers=0`` on a host that needs it) keeps its recipe."""
+    spec = model_def.model_dump(mode="json", exclude={"model_dir"})
+    for section in ("training", "smoke"):
+        if isinstance(spec.get(section), dict):
+            spec[section] = {
+                k: v for k, v in spec[section].items() if k not in RUNTIME_ONLY_TRAINING_KEYS
+            }
+    return _spec_hash(spec)
+
+
+def recipe_matches(model_def: ModelDefinition, recorded: Optional[str]) -> bool:
+    """Whether ``recorded`` names this folder's recipe. Bundles packed before
+    0.20.2 recorded the hash of the whole definition, runtime keys included,
+    so that hash still matches the folder it was packed from."""
+    if not recorded:
+        return False
+    whole = _spec_hash(model_def.model_dump(mode="json", exclude={"model_dir"}))
+    return recorded in (spec_fingerprint(model_def), whole)
 
 
 def start_run(

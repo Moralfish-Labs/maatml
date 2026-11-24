@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -161,11 +160,10 @@ def write_run_metadata(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    spec = model_def.model_dump(mode="json", exclude={"model_dir"})
-    spec_json = json.dumps(spec, sort_keys=True, separators=(",", ":"))
-    import hashlib
+    from ..runs import spec_fingerprint
 
-    spec_hash = hashlib.sha256(spec_json.encode("utf-8")).hexdigest()
+    spec = model_def.model_dump(mode="json", exclude={"model_dir"})
+    spec_hash = spec_fingerprint(model_def)
 
     ds_hashes: dict[str, str] = {}
     for key, path in dataset_paths.items():
